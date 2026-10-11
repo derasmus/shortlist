@@ -20,18 +20,14 @@ reviewer who rediscovers a finding checks the history before fixing it again.
   0.02 → 0.03, MRR 0.014 → 0.016, better/worse/same 22/17/191 — 56% agreement, below the 70% the sample needs, so
   noise. That run had only TMDB similar on and no AI, and half its 230 cases were not discoveries (99 shows
   already started, 17 rewatches); the replay now keeps discoveries only and runs every configured source.
-- #152 AI-search credit (shipped d7debc42, `web_credit_mode="scaled:0.7"`). Live, fresh rows for 6 people:
-  11% of row titles from the AI search (recent only), 18% with 6/6 history, 23% with 10/10; MooHouse alone
-  went from 0 of 120 (run 17, before) to 35 of 240 (run 19). Left open:
-  - Native search (Claude's own web search) gains least: 3% -> 4% in a partial replay. How often the model's
-    `because` matches a listed watch is unmeasured; the probe (`_credit_by_because` wrapped, 4 native cases)
-    hit an empty Anthropic balance. Measure it before changing anything.
-  - SearXNG + Claude was never replayed with `scaled:0.7` (credit ran out). The older full-credit replay
-    (s4): in row 4 vs 3, AI share 8% vs 4% of 1,380 titles.
-  - Local model (Exa + llama3.1:8b, 16k context) with 6/6 history: held-out title in row 4 -> 1 of 46 under
-    credit (0/0: 4 -> 4). Small sample; replay again with more cases before tuning.
-  - `replay.py` gathers with "full", so the headline `in_row` is "full", not production; read
-    `by_mode["scaled:0.7"]` (architecture review LOW, 2026-10-11).
+- #152 AI-search credit, settled 2026-10-11 (replays of 46 held-out discoveries per setup, final code):
+  Exa + Claude and Exa + local model keep `scaled:0.7` (no hit loss, AI share ~2x). SearXNG + Claude keeps it
+  (0/0: 5/5/5 hits, share 3% -> 6%). Native search is NOT credited (f630ae88): every scale cost 2 of 6 hits.
+  Live, fresh rows: MooHouse 0 of 120 AI titles before, 35 of 240 after. Still open, low priority:
+  - With the opt-in history mix (6/6) credit costs about 1-2 hits on every setup (Exa+Claude 15 -> 13,
+    SearXNG+Claude 5 -> 4, Exa+llama 4 -> 1). The 3x-sample local check was stopped unfinished. If it
+    matters, try crediting history seeds at a lower scale than recent ones and replay.
+  - `replay.py` gathers with "full", so its headline `in_row` is "full"; read `by_mode["scaled:0.7"]`.
 
 **Test and structure leftovers:**
 
