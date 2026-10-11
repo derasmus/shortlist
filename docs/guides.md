@@ -125,7 +125,7 @@ and labels each one `trailer-placeholder`. Shortlist reads that label and treats
 is:
 
 - Playing a trailer doesn't count as watching the film or show, so it never shapes anyone's
-  recommendations.
+  recommendations or counts as a watched pick in the reports.
 - When a title has both the real copy and a trailer, rows point at the real copy.
 - A title that only has a trailer can still go in a row, so people see it and can ask for it. A
   "Your requests" row never shows a trailer as the title someone asked for.

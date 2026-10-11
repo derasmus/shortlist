@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from datetime import date
 
-from shortlist.engine.show_seasons import describe_seasons, pick_season_numbers, tmdb_request_seasons
+from shortlist.engine.show_seasons import (
+    describe_seasons,
+    pick_season_numbers,
+    tmdb_request_seasons,
+    tmdb_season_airing,
+)
 
 TODAY = date(2026, 10, 11)
 
@@ -64,3 +69,20 @@ class TestDescribeSeasons:
 
     def test_a_gap_is_listed(self):
         assert describe_seasons([1, 3]) == "seasons 1, 3"
+
+
+class TestTmdbSeasonAiring:
+    def test_each_listed_season_and_whether_it_has_started(self):
+        details = {
+            "seasons": [
+                _season(0, air_date="2030-01-01"),
+                _season(1),
+                _season(2, air_date="2026-10-11"),
+                _season(3, air_date="2027-01-01"),
+                _season(4, episodes=0, air_date=None),
+            ]
+        }
+        assert tmdb_season_airing(details, TODAY) == {1: True, 2: True, 3: False, 4: False}
+
+    def test_no_seasons_is_empty(self):
+        assert tmdb_season_airing({}, TODAY) == {}

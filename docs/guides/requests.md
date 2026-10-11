@@ -43,7 +43,9 @@ Set it up under **Settings → Requests**:
    applies to either route). Choose **Start from** _First seasons_ or _Last seasons_ and
    **how many seasons**, or tick **Every season** (the default), which takes the whole back catalogue —
    on a twelve-season show, twelve seasons of downloads the night it is added. _First seasons, 1_ is a
-   taster you can extend in Sonarr later; _Last seasons, 3_ is the newest three. For a count above 1
+   taster you can extend in Sonarr later; _Last seasons, 3_ is the newest three that have started airing
+   (a season that's only been announced is skipped, using TMDB's air dates; straight to Sonarr, only
+   when TMDB and Sonarr number the show's seasons the same). For a count above 1
    Shortlist marks each season in Sonarr itself, because Sonarr has no mode for "the first three".
    Two extra choices exist when requests go straight to Sonarr: **Pilot episode** (the first episode,
    nothing else) and **Add unmonitored**, which files the show so nothing downloads until you say so.

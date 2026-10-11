@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import ClassVar
 
 import httpx
 import pytest
@@ -443,6 +444,55 @@ class TestSeveralSeasons:
         native = json.loads(with_count.calls.last.request.content)
         assert native["addOptions"] == {"searchForMissingEpisodes": True, "monitor": mode}
         assert native["seasons"] == SERIES_LOOKUP["seasons"]
+
+    ANNOUNCED_6: ClassVar[dict[int, bool]] = {n: n != 6 for n in range(1, 7)}  # TMDB: season 6 not aired yet
+
+    @pytest.mark.parametrize(("count", "monitored"), [(1, {5}), (2, {4, 5})])
+    @respx.mock
+    def test_last_seasons_pass_over_a_season_that_has_not_aired(self, count, monitored):
+        """Sonarr lists an announced season; its native "Last Season" would monitor it and download nothing."""
+        (status, detail, _), post = self._add(monitor="lastSeason", season_count=count, tmdb_seasons=self.ANNOUNCED_6)
+
+        assert status == "requested"
+        assert "5" in detail  # the inbox names the season it took
+        body = json.loads(post.calls.last.request.content)
+        assert body["addOptions"] == {"searchForMissingEpisodes": True, "monitor": "skip"}
+        assert {s["seasonNumber"]: s["monitored"] for s in body["seasons"]} == {n: n in monitored for n in range(7)}
+        assert body["monitorNewItems"] == "none"
+
+    @respx.mock
+    def test_every_season_aired_keeps_the_native_body(self):
+        _, post = self._add(monitor="lastSeason", season_count=1, tmdb_seasons=dict.fromkeys(range(1, 7), True))
+        body = json.loads(post.calls.last.request.content)
+        assert body["addOptions"]["monitor"] == "lastSeason"
+        assert body["seasons"] == SERIES_LOOKUP["seasons"]
+
+    @pytest.mark.parametrize(
+        "tmdb_seasons",
+        [
+            {1: True, 2: True, 3: False},  # TMDB counts fewer seasons: its season 3 need not be Sonarr's
+            {n: n != 6 for n in range(1, 8)},  # TMDB counts one more
+        ],
+    )
+    @respx.mock
+    def test_seasons_numbered_differently_on_tmdb_keep_the_native_body(self, tmdb_seasons):
+        """Sonarr numbers seasons the TheTVDB way, which splits or merges some shows' seasons (anime above all);
+        a TMDB air date then belongs to a different season, and skipping by it could drop one that has aired."""
+        _, post = self._add(monitor="lastSeason", season_count=1, tmdb_seasons=tmdb_seasons)
+        body = json.loads(post.calls.last.request.content)
+        assert body["addOptions"]["monitor"] == "lastSeason"
+        assert body["seasons"] == SERIES_LOOKUP["seasons"]
+
+    @respx.mock
+    def test_when_nothing_has_aired_last_seasons_take_what_sonarr_lists(self):
+        _, post = self._add(monitor="lastSeason", season_count=2, tmdb_seasons=dict.fromkeys(range(1, 7), False))
+        body = json.loads(post.calls.last.request.content)
+        assert {s["seasonNumber"] for s in body["seasons"] if s["monitored"]} == {5, 6}
+
+    @respx.mock
+    def test_first_seasons_ignore_air_dates(self):
+        _, post = self._add(monitor="firstSeason", season_count=1, tmdb_seasons=dict.fromkeys(range(1, 7), False))
+        assert json.loads(post.calls.last.request.content)["addOptions"]["monitor"] == "firstSeason"
 
     @pytest.mark.parametrize("mode", ["all", "pilot", "none"])
     @respx.mock

@@ -131,6 +131,40 @@ class TestIngest:
         assert rows[1].show_rating_key == 21
         store.set.assert_called_once_with(CURSOR_KEY, newest.isoformat())
 
+    def test_agregarr_trailer_plays_are_not_recorded(self, sessions):
+        """A trailer-only title can be in a row; playing its trailer is not watching the pick (#151)."""
+        store = MagicMock()
+        store.get.return_value = None
+        newest = NOW - timedelta(hours=1)
+        plex = MagicMock()
+        plex.sections.return_value = [MagicMock(key="1", type="movie"), MagicMock(key="2", type="show")]
+        plex.placeholder_keys.side_effect = lambda key, kind: {"1": frozenset({10}), "2": frozenset({31})}[key]
+        plex.play_history.return_value = [
+            PlayEvent(99, 10, None, "movie", NOW - timedelta(hours=3), "h1"),  # a trailer film
+            PlayEvent(99, 30, 31, "episode", NOW - timedelta(hours=2), "h2"),  # a trailer show's Season 0
+            PlayEvent(99, 20, 21, "episode", newest, "h3"),
+        ]
+
+        with sessions() as s:
+            assert ingest_play_history(s, plex, store) == 1
+            s.commit()
+
+        with sessions() as s:
+            assert [r.rating_key for r in s.query(WatchEvent)] == [20]
+        assert [c.args[1] for c in plex.placeholder_keys.call_args_list] == [MediaType.MOVIE, MediaType.SHOW]
+        store.set.assert_called_once_with(CURSOR_KEY, newest.isoformat())
+
+    def test_an_unreadable_trailer_list_records_every_play(self, sessions):
+        store = MagicMock()
+        store.get.return_value = None
+        plex = MagicMock()
+        plex.sections.return_value = [MagicMock(key="1", type="movie")]
+        plex.placeholder_keys.return_value = None
+        plex.play_history.return_value = [PlayEvent(99, 10, None, "movie", NOW, "h1")]
+
+        with sessions() as s:
+            assert ingest_play_history(s, plex, store) == 1
+
     def test_re_reading_the_same_window_inserts_nothing(self, sessions):
         """The cursor is deliberately rewound a minute on every read, so overlap is the normal case,
         not an edge one. `history_key` is unique, so the overlap costs nothing — which is what makes

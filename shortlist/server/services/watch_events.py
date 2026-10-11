@@ -24,7 +24,7 @@ from loguru import logger
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from shortlist.engine.models import SHARED_SLUG_PREFIX
+from shortlist.engine.models import SHARED_SLUG_PREFIX, MediaType
 from shortlist.server.db.models import (
     Collection,
     Delivery,
@@ -42,6 +42,19 @@ CURSOR_KEY = "sync.history_cursor"
 #: A first read with no cursor. Six years of history exists; picks do not go back anywhere near that
 #: far, so anything older can never be attributed to anything.
 BACKFILL_DAYS = 90
+
+
+def _trailer_keys(plex) -> frozenset[int]:
+    """ratingKeys of Agregarr trailer placeholders across the libraries (#151).
+
+    A trailer-only title can sit in a row, and playing its trailer is not watching the pick. A library
+    whose trailers cannot be read contributes none, so its plays are recorded as before.
+    """
+    keys: set[int] = set()
+    for section in plex.sections():
+        kind = MediaType.SHOW if section.type == "show" else MediaType.MOVIE
+        keys |= plex.placeholder_keys(section.key, kind) or frozenset()
+    return frozenset(keys)
 
 
 def ingest_play_history(session: Session, plex, store, *, limit: int = 20000) -> int:
@@ -93,9 +106,12 @@ def ingest_play_history(session: Session, plex, store, *, limit: int = 20000) ->
             WatchEvent.plex_account_id, WatchEvent.rating_key, WatchEvent.viewed_at
         ).filter(WatchEvent.history_key.is_(None))
     }
+    trailers = _trailer_keys(plex)
     added = 0
     for event in events:
         if event.history_key and event.history_key in known:
+            continue
+        if event.rating_key in trailers or event.show_rating_key in trailers:
             continue
         account_id = owner_account_id if event.plex_account_id == 1 and owner_account_id else event.plex_account_id
         original = (event.plex_account_id, event.rating_key, _as_utc(event.viewed_at))

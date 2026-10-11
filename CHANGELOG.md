@@ -14,7 +14,8 @@ All notable changes to this project are documented here. This project follows
   Recent only (the default, nothing changes) to Deep. A row or one person on a row can set their own, a
   person's page has **Show this week's mix** with a **Don't use** button on each title, and **How we
   picked** shows what each search was for. With Exa or SearXNG each extra title is one more search; with
-  the AI's own search there is no extra cost. Adds migration 0112.
+  the AI's own search there is no extra cost. A title they rated at or below the "didn't like it" line in
+  any library is never used as a favourite. Adds migration 0112.
 
 - **Choose how many seasons of a show to request, on either route** ([#154](https://github.com/stevezau/shortlist/issues/154)).
   **How much of a show to grab** now has a **Start from** (First or Last seasons) and a **How many seasons**
@@ -23,7 +24,9 @@ All notable changes to this project are documented here. This project follows
   upgrading:** a First or Last Season choice made for Sonarr used to be ignored there (every season was
   requested), and now applies. Pilot episode and Add unmonitored stay Sonarr-only; through Overseerr a show
   set to one of them is not sent, and waits in the inbox with the reason until you pick another choice.
-  Rows already set to First or Last Season keep taking one season. Adds migration 0113.
+  Rows already set to First or Last Season keep taking one season. On both routes, Last seasons skips a
+  season that has been announced but hasn't started airing, so a request downloads something now.
+  Adds migration 0113.
 
 ### Fixed
 
@@ -45,7 +48,7 @@ All notable changes to this project are documented here. This project follows
   Playing one of Agregarr's stand-in trailers used to count as watching the film, and as finishing a show
   that wasn't on the server yet. A title with both a real copy and a trailer could also put the trailer in a
   row. Trailer plays are now ignored and rows use the real copy. A title that only has a trailer can
-  still go in a row.
+  still go in a row, and playing its trailer no longer counts as watching that pick in the reports.
 - **AI web search no longer describes titles it shouldn't** ([#152](https://github.com/stevezau/shortlist/issues/152)). The list of someone's recent watches sent to the
   AI now leaves out titles marked "Don't seed" and titles they rated at or below the "didn't like it" line
   (when "Respect Plex ratings" is on). A row pinned to some libraries now describes only what was watched in

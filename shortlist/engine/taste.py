@@ -126,6 +126,10 @@ def build_taste(
     for item in titles:
         if counts_ratings and item.is_human_rating and item.user_rating <= ratings.threshold:
             low.append(item)
+        elif counts_ratings and (item.tmdb_id, item.media_type) in ratings.blocked:
+            # Plex rates each library's copy separately: a dislike on any copy rules the title out, as it
+            # does for seeds, even when the merged copy is unrated or rated high.
+            continue
         elif counts_ratings and item.is_human_rating and item.user_rating >= _HIGH_RATING:
             high.append(item)
         else:

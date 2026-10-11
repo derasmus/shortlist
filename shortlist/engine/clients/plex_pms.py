@@ -348,10 +348,6 @@ def log_title(title: str) -> str:
     return f"{title[:-64]} [acct {account}]"
 
 
-def _section_media_type(section: LibrarySection) -> MediaType:
-    return MediaType.MOVIE if section.type == "movie" else MediaType.SHOW
-
-
 def _library_titles(items: list, section: LibrarySection) -> list[LibraryTitle]:
     """``items`` as TMDB-identified titles of ``section``'s media type; anything else is skipped.
 

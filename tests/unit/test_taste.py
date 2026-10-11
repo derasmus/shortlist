@@ -94,6 +94,23 @@ def test_a_low_rated_title_is_never_in_recent_or_favourites():
     assert taste.favourites == []
 
 
+def test_a_title_disliked_in_another_library_is_never_a_favourite():
+    # A row pinned to the 4K library sees only the unrated 4K copy; the HD copy was rated 1 star.
+    ratings = RatingsPolicy(threshold=2, trusted=True, blocked={(7, MediaType.MOVIE)})
+    history = [movie("Split Film", 400, plays=3, tmdb_id=7), movie("Fine", 1)]
+    taste = build_taste(history, blocked=set(), ratings=ratings, recent_limit=1, older_limit=3, now=NOW)
+    named = [*taste.recent, *taste.favourites, *taste.older, *taste.rated_high, *taste.rated_low]
+    assert "Split Film" not in titles(named)
+
+
+def test_a_newer_high_rating_does_not_outweigh_a_dislike_in_another_library():
+    ratings = RatingsPolicy(threshold=2, trusted=True, blocked={(7, MediaType.MOVIE)})
+    history = [movie("Split Film", 400, tmdb_id=7, rating=2.0), movie("Split Film", 3, tmdb_id=7, rating=8.0)]
+    taste = build_taste(history, blocked=set(), ratings=ratings)
+    assert taste.rated_high == []
+    assert "Split Film" not in titles(taste.search_candidates())
+
+
 def test_rated_lists_are_ordered_and_capped_with_low_first():
     history = [movie(f"Hi{n}", n, rating=8.0 + (n % 2) * 2) for n in range(6)]
     history += [movie(f"Lo{n}", n, rating=2.0) for n in range(6)]

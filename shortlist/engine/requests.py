@@ -46,7 +46,7 @@ from shortlist.engine.models import (
 )
 from shortlist.engine.request_alloc import allocate
 from shortlist.engine.request_holds import HOLD_REASON_PREFIX, hold_reason
-from shortlist.engine.show_seasons import tmdb_request_seasons
+from shortlist.engine.show_seasons import tmdb_request_seasons, tmdb_season_airing
 
 AcquisitionGuard = Callable[
     [str, MissingTitle, RequestConfig], AbstractContextManager[Callable[[RequestOutcome], None] | None]
@@ -1341,6 +1341,23 @@ def _request_one_seerr(
     return outcome(status, detail, slug)
 
 
+def _tmdb_seasons(title: MissingTitle, tmdb: TmdbClient) -> dict[int, bool] | None:
+    """The show's TMDB seasons and whether each has aired, for "last seasons" via Sonarr; None if unreadable.
+
+    Unlike the Overseerr route this never holds the request back: Sonarr has its own season list, and
+    without TMDB it only risks monitoring an announced season, which is what it did before.
+    """
+    try:
+        return tmdb_season_airing(tmdb.details(title.tmdb_id, title.media_type), _today())
+    except Exception as e:
+        logger.warning(
+            "requests: couldn't read TMDB seasons for {!r} ({}); Sonarr picks the last seasons itself",
+            title.title,
+            type(e).__name__,
+        )
+        return None
+
+
 def _request_one(
     title: MissingTitle,
     radarr: RadarrClient | None,
@@ -1381,7 +1398,12 @@ def _request_one(
         if tvdb_id is None:
             return outcome(*blocked)
         status, detail, slug = sonarr.add_series(
-            tvdb_id, dry_run=dry_run, extra_tags=title.tags, monitor=sonarr_monitor, season_count=season_count
+            tvdb_id,
+            dry_run=dry_run,
+            extra_tags=title.tags,
+            monitor=sonarr_monitor,
+            season_count=season_count,
+            tmdb_seasons=_tmdb_seasons(title, tmdb) if sonarr_monitor == "lastSeason" else None,
         )
         return outcome(status, detail, slug)
     except ArrNotSentError as e:

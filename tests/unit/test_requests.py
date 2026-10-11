@@ -71,6 +71,7 @@ class FakeArr:
         self.series_calls: list[tuple[int, bool]] = []
         self.monitor_calls: list[str] = []  # the Sonarr monitor mode each add was sent with
         self.season_count_calls: list[int] = []  # and the season count
+        self.tmdb_seasons_calls: list[dict[int, bool] | None] = []  # and TMDB's seasons, aired or not
         self.tag_calls: list[set[str]] = []  # extra_tags passed on each add, in call order
         self.raise_on = raise_on
         self.skip_present = skip_present or set()
@@ -116,8 +117,10 @@ class FakeArr:
         extra_tags: set[str] | None = None,
         monitor: str = "all",
         season_count: int = 1,
+        tmdb_seasons: dict[int, bool] | None = None,
     ) -> tuple[str, str, str | None]:
         self.season_count_calls.append(season_count)
+        self.tmdb_seasons_calls.append(tmdb_seasons)
         self.series_calls.append((tvdb_id, dry_run))
         self.tag_calls.append(set(extra_tags or set()))
         self.monitor_calls.append(monitor)
@@ -2234,6 +2237,46 @@ class TestSeasonsOnTheSeerrRoute:
         report = requests_mod.request_titles_by_row({"r": cfg}, FakeTmdb(), [("r", movie)], dry_run=False)
         assert fake.season_calls == [None]
         assert report.outcomes[0].status == "requested"
+
+    def test_the_arr_route_tells_sonarr_which_seasons_have_aired(self, monkeypatch):
+        monkeypatch.setattr(requests_mod, "_today", lambda: date(2026, 10, 11))
+        announced = {"season_number": 4, "episode_count": 8, "air_date": "2027-03-01"}
+        details = {"seasons": [*self.DETAILS["seasons"], announced]}
+        sonarr = FakeArr()
+        requests_mod._request_one(
+            self.SHOW,
+            None,
+            sonarr,
+            FakeTmdb({1399: 81189}, details=details),
+            dry_run=False,
+            sonarr_monitor="lastSeason",
+        )
+        assert sonarr.tmdb_seasons_calls == [{1: True, 2: True, 3: True, 4: False}]
+
+    def test_a_tmdb_failure_still_sends_last_seasons_to_sonarr(self):
+        sonarr = FakeArr()
+        report = requests_mod._request_one(
+            self.SHOW,
+            None,
+            sonarr,
+            FakeTmdb({1399: 81189}, details=RuntimeError("tmdb down")),
+            dry_run=False,
+            sonarr_monitor="lastSeason",
+        )
+        assert report.status == "requested"
+        assert sonarr.tmdb_seasons_calls == [None]
+
+    def test_first_seasons_do_not_read_tmdb_seasons(self):
+        sonarr = FakeArr()
+        requests_mod._request_one(
+            self.SHOW,
+            None,
+            sonarr,
+            FakeTmdb({1399: 81189}, details=AssertionError("read")),
+            dry_run=False,
+            sonarr_monitor="firstSeason",
+        )
+        assert sonarr.tmdb_seasons_calls == [None]
 
     def test_the_arr_route_passes_the_count_to_sonarr(self):
         sonarr = FakeArr()

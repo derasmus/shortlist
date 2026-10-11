@@ -52,6 +52,30 @@ def tmdb_request_seasons(details: dict, mode: str, count: int, today: date) -> l
     return pick_season_numbers([s["season_number"] for s in candidates], mode, count)
 
 
+def tmdb_season_airing(details: dict, today: date) -> dict[int, bool]:
+    """Each season TMDB lists (never 0), and whether it has started airing (dated ``today`` or earlier)."""
+    return {
+        s["season_number"]: _has_aired(s.get("air_date"), today)
+        for s in details.get("seasons") or []
+        if (s.get("season_number") or 0) > 0
+    }
+
+
+def aired_sonarr_seasons(numbers: list[int], tmdb_seasons: dict[int, bool] | None) -> list[int] | None:
+    """Sonarr's seasons that have started airing, or None when TMDB can't say or nothing would change.
+
+    Sonarr lists an announced season, and its own "Last Season" monitors it, so a request would download
+    nothing until it airs. Its lookup carries no air dates, so TMDB's are used, but only when both list the
+    same seasons: Sonarr numbers them the TheTVDB way, which splits or merges some shows' seasons (anime
+    above all), and a TMDB date would then belong to a different season. If none has aired, None too.
+    """
+    real = sorted(n for n in numbers if n > 0)
+    if not tmdb_seasons or set(real) != set(tmdb_seasons):
+        return None
+    aired = [n for n in real if tmdb_seasons[n]]
+    return aired if aired and aired != real else None
+
+
 def _has_aired(air_date: str | None, today: date) -> bool:
     """True when TMDB's ``YYYY-MM-DD`` air date is set and not in the future."""
     if not air_date:
