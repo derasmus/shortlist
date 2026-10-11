@@ -396,3 +396,33 @@ def test_a_title_discover_also_found_is_priced_like_one_the_web_found_alone(mock
     straying = next(c for c in pool if c.title == "Straying")
     assert straying.sources == {"tmdb_discover", "llm_web"}
     assert straying.affinity == 0.75 and straying.pre_web_affinity is None
+
+
+def test_the_because_prompt_asks_for_every_title():
+    """Measured 2026-10-11 on 4 people with native search: "if one is clearly why" got a because on 28 of 160
+    titles; asking for every title got 156 of 156, 146 naming a listed watch exactly."""
+    system = build_web_prompt(SimpleNamespace(history=[]), [seed(1, "R1")], 10, year=2026, because=True)[0]
+    assert "For each title" in system
+
+
+def _credit(because, *titles):
+    from shortlist.engine.candidates import _credit_by_because
+
+    recs = [{"title": "X", "because": because}]
+    _credit_by_because(recs, [seed(i, t) for i, t in enumerate(titles, 1)])
+    return [s.title for s in recs[0].get("for", [])]
+
+
+def test_a_because_that_shortens_one_listed_title_credits_it():
+    assert _credit("Mission Impossible", "Mission: Impossible - Dead Reckoning", "Heat") == [
+        "Mission: Impossible - Dead Reckoning"
+    ]
+
+
+def test_a_shortened_because_that_fits_two_listed_titles_is_ignored():
+    assert _credit("Alien", "Alien: Romulus", "Alien: Earth") == []
+
+
+def test_a_shortened_because_must_end_on_a_word():
+    assert _credit("Alie", "Alien: Romulus") == []
+    assert _credit("Alien", "Aliens") == []

@@ -610,6 +610,11 @@ def _credit_proposals(
     _credit_by_because([r for r in recs if "for" not in r], [seed for seed, _ in searched])
 
 
+def _shortens(a: str, b: str) -> bool:
+    """Whether one normalised title is the other cut short at a word boundary."""
+    return bool(a and b) and (b.startswith(a + " ") or a.startswith(b + " "))
+
+
 def _credit_by_because(recs: list[dict], listed: list[Seed]) -> None:
     """Credit each uncredited proposal to the one listed watch its ``because`` names (#152).
 
@@ -618,11 +623,17 @@ def _credit_by_because(recs: list[dict], listed: list[Seed]) -> None:
     """
     for rec in recs:
         named = rec.get("because")
-        if "for" in rec or not isinstance(named, str):
+        if "for" in rec or not isinstance(named, str) or not _normalised(named):
             continue
-        matches = {(s.tmdb_id, s.media_type): s for s in listed if _normalised(s.title) == _normalised(named)}
-        if _normalised(named) and len(matches) == 1:
-            rec["for"] = list(matches.values())[:_MAX_CREDITED_SEEDS]
+        wanted = _normalised(named)
+        matches = {(s.tmdb_id, s.media_type): s for s in listed if _normalised(s.title) == wanted}
+        if not matches:
+            # A model asked for a because on every title shortens about 1 in 15 of them ("Mission Impossible"
+            # for "Mission: Impossible - Dead Reckoning", measured 2026-10-11). A whole-word prefix names a watch
+            # only when it fits exactly one, so "Alien" credits nothing beside "Alien: Romulus" and "Alien: Earth".
+            matches = {(s.tmdb_id, s.media_type): s for s in listed if _shortens(wanted, _normalised(s.title))}
+        if len(matches) == 1:
+            rec["for"] = list(matches.values())
 
 
 def _title_key(candidate: TitleCandidate) -> tuple[str, str]:

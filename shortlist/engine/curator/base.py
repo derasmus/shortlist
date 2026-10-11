@@ -154,8 +154,8 @@ _OWNER_ADDS = "The server owner adds, for this row: "
 # Asks which watched title a proposal follows from, so the pipeline can credit that watch (#152). Only the prompts
 # where the model chooses from the whole web carry it; the pick prompt already knows which search found each title.
 _BECAUSE = (
-    ' If one of the watched titles listed above is clearly why you chose a title, add "because": that watched '
-    "title exactly as listed. Leave it out when none is."
+    ' For each title, add "because": the watched title listed above that it most follows from, exactly as '
+    "listed. Leave it out only when no listed title relates to it."
 )
 
 
