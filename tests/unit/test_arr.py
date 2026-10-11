@@ -461,6 +461,13 @@ class TestSeveralSeasons:
         assert body["monitorNewItems"] == "none"
 
     @respx.mock
+    def test_an_undated_season_between_aired_ones_still_counts(self):
+        tmdb_seasons = {1: True, 2: True, 3: True, 4: False, 5: True, 6: False}  # TMDB never dated season 4
+        _, post = self._add(monitor="lastSeason", season_count=2, tmdb_seasons=tmdb_seasons)
+        body = json.loads(post.calls.last.request.content)
+        assert {s["seasonNumber"] for s in body["seasons"] if s["monitored"]} == {4, 5}
+
+    @respx.mock
     def test_every_season_aired_keeps_the_native_body(self):
         _, post = self._add(monitor="lastSeason", season_count=1, tmdb_seasons=dict.fromkeys(range(1, 7), True))
         body = json.loads(post.calls.last.request.content)

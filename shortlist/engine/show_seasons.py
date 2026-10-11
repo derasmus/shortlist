@@ -34,9 +34,9 @@ def tmdb_request_seasons(details: dict, mode: str, count: int, today: date) -> l
     """The seasons to request for a show, from its TMDB ``/tv/{id}`` details.
 
     Candidates are seasons with episodes and a number above 0 — the filter Seerr applies itself to
-    ``"all"``. For ``lastSeason`` a season TMDB has announced but not started airing is skipped, so
-    "the newest season" means the newest one a viewer can watch; if nothing has aired yet, every
-    candidate stays in play rather than requesting nothing.
+    ``"all"``. For ``lastSeason`` the newest seasons TMDB has announced but not started airing are
+    skipped, so "the newest season" means the newest one a viewer can watch; if nothing has aired yet,
+    every candidate stays in play rather than requesting nothing.
 
     Returns:
         The season numbers, ascending; empty when the show lists no usable season.
@@ -46,10 +46,23 @@ def tmdb_request_seasons(details: dict, mode: str, count: int, today: date) -> l
         for s in details.get("seasons") or []
         if (s.get("season_number") or 0) > 0 and (s.get("episode_count") or 0) > 0
     ]
+    numbers = [s["season_number"] for s in candidates]
     if mode == "lastSeason":
-        aired = [s for s in candidates if _has_aired(s.get("air_date"), today)]
-        candidates = aired or candidates
-    return pick_season_numbers([s["season_number"] for s in candidates], mode, count)
+        aired = {s["season_number"]: _has_aired(s.get("air_date"), today) for s in candidates}
+        numbers = _without_announced(numbers, aired) or numbers
+    return pick_season_numbers(numbers, mode, count)
+
+
+def _without_announced(numbers: list[int], aired: dict[int, bool]) -> list[int]:
+    """``numbers`` (ascending) minus the newest run of seasons that have not started airing.
+
+    Only that run is announced: TMDB leaves some old seasons undated, and one with an aired season after
+    it has aired too. Empty when none has aired.
+    """
+    kept = sorted(numbers)
+    while kept and not aired[kept[-1]]:
+        kept.pop()
+    return kept
 
 
 def tmdb_season_airing(details: dict, today: date) -> dict[int, bool]:
@@ -72,7 +85,7 @@ def aired_sonarr_seasons(numbers: list[int], tmdb_seasons: dict[int, bool] | Non
     real = sorted(n for n in numbers if n > 0)
     if not tmdb_seasons or set(real) != set(tmdb_seasons):
         return None
-    aired = [n for n in real if tmdb_seasons[n]]
+    aired = _without_announced(real, tmdb_seasons)
     return aired if aired and aired != real else None
 
 

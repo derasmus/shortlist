@@ -47,6 +47,11 @@ class TestTmdbRequestSeasons:
         details = {"seasons": [_season(1), _season(2), _season(3, air_date="2027-01-01"), _season(4, air_date=None)]}
         assert tmdb_request_seasons(details, "lastSeason", 1, TODAY) == [2]
 
+    def test_last_keeps_an_undated_season_between_aired_ones(self):
+        # TMDB leaves some old seasons undated; one with an aired season after it has aired too.
+        details = {"seasons": [_season(1), _season(2, air_date=None), _season(3), _season(4, air_date="2027-01-01")]}
+        assert tmdb_request_seasons(details, "lastSeason", 3, TODAY) == [1, 2, 3]
+
     def test_last_falls_back_to_all_candidates_when_none_have_aired(self):
         details = {"seasons": [_season(1, air_date="2027-01-01"), _season(2, air_date=None)]}
         assert tmdb_request_seasons(details, "lastSeason", 1, TODAY) == [2]
