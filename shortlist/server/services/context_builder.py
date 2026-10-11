@@ -84,7 +84,11 @@ from shortlist.server.services.delivery_snapshots import utc
 from shortlist.server.services.pick_history import DbPickHistory
 from shortlist.server.services.plex_reachability import explained
 from shortlist.server.services.poster_service import load_upload, make_studio
-from shortlist.server.services.request_actions import AutomaticRequestGuard, durable_handled_requests
+from shortlist.server.services.request_actions import (
+    AutomaticRequestGuard,
+    durable_handled_requests,
+    recently_refused_requests,
+)
 from shortlist.server.services.season_catalogue import load_catalogue
 from shortlist.server.services.sse import EventBus
 from shortlist.server.services.theme_store import spec_from_row
@@ -562,6 +566,7 @@ class ContextBuilder:
                 # complete picture converge needs before it may DELETE an unattributable collection.
                 may_delete_orphans=True,
                 handled_requests=self._handled_requests(session),
+                refused_requests=recently_refused_requests(session),
                 acquisition_guard=(
                     acquisition_guard if acquisition_guard is not None else AutomaticRequestGuard(self._sessions)
                 ),

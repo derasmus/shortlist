@@ -2493,6 +2493,11 @@ them is not requested, and shows in the Requests inbox with a note to pick first
 TMDB can't be read for a show, that show waits and is tried again on the next run rather than being
 requested in full.
 
+**A refusal that would repeat waits a week.** When Sonarr or Radarr can't find a title, or TMDB lists
+no seasons for a show yet, the title stays in the Requests inbox with the reason and auto-send leaves it
+alone for a week, so it doesn't take a nightly slot from the titles below it. Changing where requests go,
+or how much of a show to grab, lifts the wait. You can send it from the inbox at any time.
+
 The picker lists every account on the instance, with accounts made for this first and people on your
 server after them, and tells you which ones auto-approve.
 

@@ -2149,6 +2149,57 @@ class TestOverseerrTarget:
         assert queued[603].detail == "on the blocklist"
 
 
+class TestATitleThatCannotBeSentNeverHoldsASlot:
+    """A refusal that will repeat must not win an auto-send slot night after night (release review,
+    2026-10-12): with one slot, a refused show took it every run and the film below it never went."""
+
+    SHOW = MissingTitle(1399, "a show", MediaType.SHOW, 2011, rating=9.2, vote_count=900, demand=5)
+    FILM = MissingTitle(550, "a film", MediaType.MOVIE, 1999, rating=8.8, vote_count=900, demand=3)
+
+    def _night(self, monkeypatch, cfg, **kw):
+        fake = FakeSeerr()
+        monkeypatch.setattr(requests_mod, "SeerrClient", lambda *a, **k: fake)
+        demand = {(m.tmdb_id, m.media_type): m for m in (self.SHOW, self.FILM)}
+        report = _request_missing(cfg, FakeTmdb({1399: 81189}), demand, dry_run=False, **kw)
+        return report, [o.tmdb_id for o in report.outcomes if o.status == "requested"]
+
+    @pytest.mark.parametrize("mode", ["pilot", "none"])
+    def test_a_mode_overseerr_cannot_take_is_held_before_the_slots_are_shared(self, monkeypatch, mode):
+        cfg = _cfg(overseerr=OVERSEERR, target="overseerr", sonarr_monitor=mode, max_per_run=1)
+        report, sent = self._night(monkeypatch, cfg)
+        assert sent == [550]
+        [held] = [m for m in report.queued if m.tmdb_id == 1399]
+        assert held.detail.startswith("not possible through Overseerr")
+
+    SEERR_ALL: ClassVar[dict] = {"service": "overseerr", "monitor": "all", "season_count": 1}
+
+    def test_a_title_refused_lately_waits_in_the_inbox_and_frees_its_slot(self, monkeypatch):
+        cfg = _cfg(overseerr=OVERSEERR, target="overseerr", max_per_run=1)
+        refused = {(1399, "show"): requests_mod.Refusal("TMDB lists no seasons for this show yet", self.SEERR_ALL)}
+        report, sent = self._night(monkeypatch, cfg, recently_refused=refused)
+        assert sent == [550]
+        [held] = [m for m in report.queued if m.tmdb_id == 1399]
+        assert held.detail == "refused when last sent, tried again in a week — TMDB lists no seasons for this show yet"
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            {"service": "sonarr", "monitor": "all", "season_count": 1},  # sent to Sonarr; the row now uses Overseerr
+            {"service": "overseerr", "monitor": "lastSeason", "season_count": 1},  # refused under another mode
+        ],
+    )
+    def test_a_change_of_setup_lifts_the_hold(self, monkeypatch, target):
+        cfg = _cfg(overseerr=OVERSEERR, target="overseerr", max_per_run=1)
+        refused = {(1399, "show"): requests_mod.Refusal("Sonarr could not find this title", target)}
+        _, sent = self._night(monkeypatch, cfg, recently_refused=refused)
+        assert sent == [1399]
+
+    def test_with_nothing_refused_the_higher_demand_title_takes_the_slot(self, monkeypatch):
+        cfg = _cfg(overseerr=OVERSEERR, target="overseerr", max_per_run=1)
+        _, sent = self._night(monkeypatch, cfg)
+        assert sent == [1399]
+
+
 class TestSeasonsOnTheSeerrRoute:
     """First/last N seasons reach Overseerr as a season list; the modes it cannot take are refused."""
 
@@ -2198,7 +2249,7 @@ class TestSeasonsOnTheSeerrRoute:
     def test_a_tmdb_failure_is_refused_never_a_request_for_every_season(self, monkeypatch):
         fake, outcome = self._send(monkeypatch, monitor="firstSeason", details=RuntimeError("TMDB API error HTTP 503"))
         assert fake.requests == []
-        assert outcome.status == "skipped_no_seasons"
+        assert outcome.status == "skipped_not_sent"  # a blip, retried next run; not a standing refusal
         assert "next run" in outcome.detail
         assert "503" not in outcome.detail
 
@@ -2210,7 +2261,8 @@ class TestSeasonsOnTheSeerrRoute:
 
     @pytest.mark.parametrize(
         ("mode", "details"),
-        [("pilot", None), ("firstSeason", RuntimeError("TMDB down")), ("lastSeason", {"seasons": []})],
+        # "pilot" is held before the send, with its own reason: TestATitleThatCannotBeSentNeverHoldsASlot.
+        [("firstSeason", RuntimeError("TMDB down")), ("lastSeason", {"seasons": []})],
     )
     def test_a_refused_show_waits_in_the_inbox_with_its_reason(self, monkeypatch, mode, details):
         """Skips are normally settled facts the inbox leaves out; these are not — the owner can act on

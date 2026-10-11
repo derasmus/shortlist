@@ -215,6 +215,8 @@ QUEUE_REASON_PREFIXES = (
     "Radarr isn't fully set up",
     "Sonarr isn't fully set up",
     "no TheTVDB id",
+    "not possible through Overseerr",
+    "refused when last sent",
     "demand below",
     "rating below",
     "max_per_run",
@@ -415,6 +417,7 @@ def _auto_eligible(
     blocked: Counter[str],
     no_tvdb: set[tuple[int, MediaType]] | None = None,
     holds: dict[tuple[int, MediaType], str] | None = None,
+    refused: dict[tuple[int, str], Refusal] | None = None,
 ) -> tuple[list[MissingTitle], list[MissingTitle]]:
     """Split one row's qualifying titles into ``(eligible, held_back)`` on its auto-send bar.
 
@@ -429,8 +432,11 @@ def _auto_eligible(
     A title that can never land is held here, BEFORE allocation, rather than skipped at the send: a
     skip is recorded nowhere, so the same title qualified again the next night and took a slot again.
     That covers a media type with no usable Arr on the Arr route, and ``no_tvdb`` — the shows Sonarr
-    can never be sent (see :func:`_shows_without_tvdb`). ``holds`` are the movies the owner's genre/tag
-    filter keeps out of auto-send (see :mod:`request_holds`), each with what matched.
+    can never be sent (see :func:`_shows_without_tvdb`), and a show on the *seerr route set to a mode it
+    cannot take. ``refused`` are titles a send was refused for lately with a `STANDING_REFUSALS` status,
+    keyed like ``already_handled``; each is held while the row would still send it the same way.
+    ``holds`` are the movies the owner's genre/tag filter keeps out of auto-send (see :mod:`request_holds`),
+    each with what matched.
     """
     eligible: list[MissingTitle] = []
     held_back: list[MissingTitle] = []
@@ -445,6 +451,12 @@ def _auto_eligible(
             reason = "Sonarr isn't fully set up — connect it and pick a quality profile and root folder"
         elif (m.tmdb_id, m.media_type) in (no_tvdb or set()):
             reason = "no TheTVDB id on TMDB, and Sonarr needs one — add this show in Sonarr yourself"
+        elif not via_arr and m.media_type is not MediaType.MOVIE and cfg.sonarr_monitor in ("pilot", "none"):
+            reason = "not possible through Overseerr: Pilot episode or Add unmonitored — pick first or last seasons"
+        elif (refusal := (refused or {}).get((m.tmdb_id, m.media_type.value))) and _same_setup(
+            cfg, m.media_type, refusal.target
+        ):
+            reason = f"refused when last sent, tried again in a week — {refusal.detail}"
         elif m.excluded:
             # Named for the route: the Arrs call it an import-exclusion list and a *seerr calls it a
             # blocklist, and a reason line that names the wrong one sends the owner to the wrong app
@@ -495,6 +507,7 @@ def request_missing(
     already_handled: set[tuple[int, str]] | None = None,
     mdblist: MdbListClient | None = None,
     acquisition_guard: AcquisitionGuard | None = None,
+    recently_refused: dict[tuple[int, str], Refusal] | None = None,
 ) -> RequestReport:
     """Auto-request the strongest missing titles per row; queue the rest for the owner to approve.
 
@@ -569,7 +582,7 @@ def request_missing(
         # it has none (see `_request_one_seerr`).
         no_tvdb = _shows_without_tvdb(tmdb, survivors) if cfg.target == "overseerr" or cfg.sonarr else set()
         holds = _holds(tmdb, survivors, cfg, hold_memo)
-        eligible, held_back = _auto_eligible(cfg, survivors, blocked, no_tvdb, holds)
+        eligible, held_back = _auto_eligible(cfg, survivors, blocked, no_tvdb, holds, recently_refused)
         report.queued.extend(held_back)
         auto_by_row.append((slug, eligible))
 
@@ -1258,7 +1271,29 @@ def _tvdb_for_sonarr(title: MissingTitle, tmdb: TmdbClient) -> tuple[int | None,
 # Skips the inbox should still show. They are `skipped_*` rather than "error" because the request
 # claim records any other status as an uncertain send, which is never retried — "error" is kept for a
 # failure that may have reached the app. `skipped_not_sent` is any failure before anything was sent.
-_REQUEUED_SKIPS = ("skipped_unsupported", "skipped_no_seasons", "skipped_not_sent")
+_REQUEUED_SKIPS = ("skipped_unsupported", "skipped_no_seasons", "skipped_not_sent", "skipped_not_found")
+# The ones that will say the same thing tomorrow. The server hands back the titles refused with one of
+# these lately (`recently_refused`), and they sit out auto-send for a while instead of winning a slot
+# every night; `skipped_not_sent` is a blip and is retried the next run.
+STANDING_REFUSALS = ("skipped_unsupported", "skipped_no_seasons", "skipped_not_found")
+
+
+class Refusal(NamedTuple):
+    """A standing refusal the server hands back: its reason, and the target it was sent to."""
+
+    detail: str
+    target: dict  # the claim's target snapshot: `service`, and `monitor`/`season_count` for a show
+
+
+def _same_setup(cfg: RequestConfig, media_type: MediaType, target: dict) -> bool:
+    """Whether ``cfg`` would send this title the way the refused send went; a change of app or of how
+    much of a show to grab is a new attempt, so the hold lifts."""
+    by_arr = "radarr" if media_type is MediaType.MOVIE else "sonarr"
+    if target.get("service") != ("overseerr" if cfg.target == "overseerr" else by_arr):
+        return False
+    if media_type is MediaType.MOVIE:
+        return True
+    return target.get("monitor") == cfg.sonarr_monitor and target.get("season_count") == cfg.season_count
 
 
 def _today() -> date:
@@ -1326,7 +1361,7 @@ def _request_one_seerr(
                     type(e).__name__,
                 )
                 return outcome(
-                    "skipped_no_seasons",
+                    "skipped_not_sent",
                     "Couldn't read this show's season list from TMDB; it will be tried again next run",
                 )
             seasons = tmdb_request_seasons(details, monitor, season_count, _today())

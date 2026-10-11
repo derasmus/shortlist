@@ -34,7 +34,10 @@ All notable changes to this project are documented here. This project follows
   reached to find a show's TheTVDB id, or Sonarr or Radarr failed while looking a title up, the request was
   treated as possibly sent and never tried again until you released it on the Requests page. It now waits in
   the inbox with the reason and is tried again next run. A send that may really have reached Sonarr or Radarr
-  is still held back for you to check.
+  is still held back for you to check. A title that would be refused again the next night (Sonarr or Radarr
+  can't find it, TMDB lists no seasons yet, or a mode Overseerr can't take) waits in the inbox and is only
+  sent automatically again after a week, or sooner if you change where or how it is requested, so it never
+  takes an auto-send slot from the titles below it. You can still send it from the inbox at any time.
 
 - **A SearXNG search whose engines were all failing no longer counts as "nothing found"** ([#152](https://github.com/stevezau/shortlist/issues/152)). An empty page from blocked or rate-limited engines was cached for a week as a real empty answer; it is now a failed search, retried next run.
 - **A local Ollama model that answered AI web search in prose now says why** ([#152](https://github.com/stevezau/shortlist/issues/152)). Ollama's default context window cuts off the start of Shortlist's prompt; the run trace and Settings Test now point to `OLLAMA_CONTEXT_LENGTH=16384`.

@@ -32,7 +32,7 @@ from shortlist.engine.seasons import SeasonTitles
 from shortlist.engine.themes import ThemeTitles
 
 if TYPE_CHECKING:
-    from shortlist.engine.requests import AcquisitionGuard
+    from shortlist.engine.requests import AcquisitionGuard, Refusal
     from shortlist.engine.requests_row import RequestLedger
 
 
@@ -153,6 +153,9 @@ class EngineContext:
     # Keeps a slow download from re-winning a request slot every night, and a "no" from being undone
     # by a later auto-send. Empty for direct engine runs, which have no inbox.
     handled_requests: set[tuple[int, str]] = field(default_factory=set)
+    # Titles a send was refused for lately in a way that will repeat, each with why: they sit out
+    # auto-send for a while instead of taking a slot every night (`requests.STANDING_REFUSALS`).
+    refused_requests: dict[tuple[int, str], Refusal] = field(default_factory=dict)
     acquisition_guard: AcquisitionGuard | None = None
     # MDBList client (cache-backed) for the chosen non-TMDB rating source; None when neither the
     # request gate nor row ordering asks for one, or no MDBList key is set. Built by the server

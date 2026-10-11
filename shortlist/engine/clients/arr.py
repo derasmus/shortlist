@@ -366,12 +366,13 @@ class RadarrClient(_ArrClient):
 
         ``extra_tags`` are per-user/per-row labels layered onto the target's global tag. ``slug`` is
         Radarr's titleSlug for the inbox deep-link (None if the title didn't resolve).
-        status is one of: would_request (dry-run), requested, skipped_present, skipped_not_sent, error.
+        status is one of: would_request (dry-run), requested, skipped_present, skipped_not_found,
+        skipped_not_sent, error.
         """
         with _nothing_sent_yet():
             resource = self._get(f"/api/v3/movie/lookup/tmdb?tmdbId={tmdb_id}")
         if not isinstance(resource, dict) or not resource.get("tmdbId"):
-            return "skipped_not_sent", "Radarr could not find this title", None
+            return "skipped_not_found", "Radarr could not find this title", None
         slug = resource.get("titleSlug") or None
         if resource.get("id"):  # a non-zero id means Radarr already tracks it
             return "skipped_present", "already in Radarr", slug
@@ -460,7 +461,8 @@ class SonarrClient(_ArrClient):
 
         ``extra_tags`` are per-user/per-row labels layered onto the target's global tag. ``slug`` is
         Sonarr's titleSlug — the ONLY way to deep-link its series page (Sonarr has no id-based URL).
-        status is one of: would_request (dry-run), requested, skipped_present, skipped_not_sent, error.
+        status is one of: would_request (dry-run), requested, skipped_present, skipped_not_found,
+        skipped_not_sent, error.
 
         ``monitor`` is one of ``SONARR_MONITOR_MODES`` and decides how much of the show Sonarr
         monitors, and therefore downloads: "all" takes the whole back catalogue, "firstSeason" a
@@ -473,7 +475,7 @@ class SonarrClient(_ArrClient):
             results = self._get(f"/api/v3/series/lookup?term=tvdb:{tvdb_id}")
         resource = _match_tvdb(results, tvdb_id)
         if resource is None:
-            return "skipped_not_sent", "Sonarr could not find this title", None
+            return "skipped_not_found", "Sonarr could not find this title", None
         slug = resource.get("titleSlug") or None
         if resource.get("id"):  # a non-zero id means Sonarr already tracks it
             return "skipped_present", "already in Sonarr", slug

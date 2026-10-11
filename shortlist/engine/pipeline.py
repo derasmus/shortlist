@@ -2442,6 +2442,7 @@ def _request_phase(ctx: EngineContext, requests_on: bool, demand: requests_mod.R
                 already_handled=ctx.handled_requests,
                 mdblist=ctx.mdblist,
                 acquisition_guard=ctx.acquisition_guard,
+                recently_refused=ctx.refused_requests,
             )
         except Exception as e:
             # A wholesale request-pass failure (e.g. building a client) is a footnote, never a run

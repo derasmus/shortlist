@@ -12,6 +12,7 @@ from shortlist.server.db.models import RequestCandidate
 from shortlist.server.services.request_actions import (
     AutomaticRequestGuard,
     durable_handled_requests,
+    recently_refused_requests,
     request_send_entry,
     reserve_request_dispatches,
 )
@@ -212,3 +213,43 @@ class TestAFailureBeforeSendingNeverBlocksTheTitle:
         assert outcome.status == "error"
         assert claim_status == "outcome_unknown"
         assert handled == {(202, "show")}
+
+
+class TestARefusalThatWillRepeatSitsOutAWhile:
+    """Release review 2026-10-12: a title refused with a standing reason won an auto-send slot every
+    night. The server hands such titles back so the next runs hold them in the inbox instead."""
+
+    def _refuse(self, env, status: str, detail: str, *, days_ago: float = 0):
+        from datetime import UTC, datetime, timedelta
+
+        with AutomaticRequestGuard(env.state.sessions)("movies", automatic_title(), config()) as record:
+            record(SimpleNamespace(status=status, detail=detail, arr_slug=None))
+        with env.state.sessions() as session:
+            claim = session.scalars(select(AssistantRequestDispatch)).all()[-1]
+            claim.finished_at = datetime.now(UTC) - timedelta(days=days_ago)
+            session.commit()
+
+    def _refused(self, env):
+        with env.state.sessions() as session:
+            return recently_refused_requests(session)
+
+    def test_a_standing_refusal_is_handed_back_with_its_reason(self, request_env):
+        self._refuse(request_env, "skipped_not_found", "Radarr could not find this title")
+        [(key, refusal)] = self._refused(request_env).items()
+        assert key == (101, "movie")
+        assert refusal.detail == "Radarr could not find this title"
+        assert refusal.target["service"] == "radarr"
+
+    def test_a_blip_is_retried_next_run(self, request_env):
+        self._refuse(request_env, "skipped_not_sent", "Radarr unreachable (ConnectError)")
+        assert self._refused(request_env) == {}
+
+    def test_a_week_on_it_is_tried_again(self, request_env):
+        self._refuse(request_env, "skipped_not_found", "Radarr could not find this title", days_ago=8)
+        assert self._refused(request_env) == {}
+
+    def test_a_later_send_that_succeeded_clears_it(self, request_env):
+        self._refuse(request_env, "skipped_not_found", "Radarr could not find this title", days_ago=2)
+        with AutomaticRequestGuard(request_env.state.sessions)("movies", automatic_title(), config()) as record:
+            record(SimpleNamespace(status="requested", detail="accepted", arr_slug=None))
+        assert self._refused(request_env) == {}
