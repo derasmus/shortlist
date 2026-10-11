@@ -85,6 +85,10 @@ function requestHint(s: RunDetail["stats"]): string {
   return `rated all ${pool} — none cleared the rating limit`;
 }
 
+function percent(share: number): string {
+  return `${Math.round(share * 100)}%`;
+}
+
 export function RunStatTiles({ run }: { run: RunDetail }) {
   const s = run.stats;
   const elapsed = runElapsedMs(run.began_at, run.finished_at);
@@ -145,6 +149,9 @@ export function RunStatTiles({ run }: { run: RunDetail }) {
     ) : (
       "sent + received"
     );
+  // Absent on a run recorded before the figure existed, null when the run did not use the AI search.
+  const webAll = run.web_share?.all ?? null;
+  const webPicked = run.web_share?.picked ?? null;
   const showTokens = tokens > 0;
   const showExa = exa > 0 || exaCacheHits > 0;
   // Only a warning or a failure earns a dot in place of the icon: a green dot on every healthy
@@ -237,6 +244,15 @@ export function RunStatTiles({ run }: { run: RunDetail }) {
                 : requestHint(s)
           }
         />
+        {webAll != null && (
+          <MetaFact
+            icon={Sparkles}
+            label="AI-search titles in rows"
+            value={percent(webAll)}
+            hint={webPicked != null ? `Picked for You: ${percent(webPicked)}` : "of everything delivered"}
+            title="The share of the titles this run delivered that the AI web search found, which sets it beside what similar-title lookups found. A title both found counts here."
+          />
+        )}
         {showTokens && (
           <MetaFact
             icon={Sparkles}

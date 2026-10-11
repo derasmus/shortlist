@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 from loguru import logger
 
 from shortlist.engine.curator.base import (
@@ -48,6 +50,15 @@ _TITLES_SCHEMA: dict = {
     },
     "required": ["titles"],
 }
+
+
+def _titles_schema(because: bool) -> dict:
+    """``_TITLES_SCHEMA``, with the optional ``because`` field added when asked for."""
+    if not because:
+        return _TITLES_SCHEMA
+    schema = copy.deepcopy(_TITLES_SCHEMA)
+    schema["properties"]["titles"]["items"]["properties"]["because"] = {"type": "string", "nullable": True}
+    return schema
 
 
 class GoogleCurator:
@@ -137,6 +148,7 @@ class GoogleCurator:
         *,
         guidance: Guidance | None = None,
         taste: TastePrompt | None = None,
+        because: bool = False,
     ) -> list[dict]:
         """Propose up to k titles via Gemini's Google Search grounding tool (the ``llm_web`` source).
 
@@ -158,11 +170,12 @@ class GoogleCurator:
         provider error.
 
         ``guidance`` is the row's AI instructions (#138); None sends the built-in prompt. ``taste`` is the
-        history text (#152); only a wide one changes the prompt.
+        history text (#152); only a wide one changes the prompt. ``because`` also asks the model
+        which watched title each proposal follows from (#152), and lets the response schema carry it.
         """
-        system, user = build_web_prompt(profile, seeds, k, guidance=guidance, taste=taste)
+        system, user = build_web_prompt(profile, seeds, k, guidance=guidance, taste=taste, because=because)
         try:
-            r = self._grounded_call(system, user, with_schema=self._schema_supported)
+            r = self._grounded_call(system, user, with_schema=self._schema_supported, because=because)
         except Exception as e:  # google-genai raises provider-specific exceptions
             if self._provider_controls is not None:
                 logger.warning("llm_web (google) failed ({})", type(e).__name__)
@@ -196,7 +209,7 @@ class GoogleCurator:
             )
         return parse_web_titles(r.text or "", k)
 
-    def _grounded_call(self, system: str, user: str, *, with_schema: bool):
+    def _grounded_call(self, system: str, user: str, *, with_schema: bool, because: bool = False):
         """One generate_content call with Google Search grounding, optionally under a response schema.
 
         Dropping the schema — never the grounding — is the fallback: the tolerant parser copes
@@ -216,7 +229,7 @@ class GoogleCurator:
                 config["max_output_tokens"] = controls.max_output_tokens
         if with_schema:
             config["response_mime_type"] = "application/json"
-            config["response_schema"] = _TITLES_SCHEMA
+            config["response_schema"] = _titles_schema(because)
         with provider_call(
             controls,
             ProviderCall(

@@ -909,6 +909,8 @@ export interface TraceWeb {
   proposals?: TraceWebProposal[];
   /** Titles whose search failed this gather (timeout, HTTP error). Absent when every search worked. */
   failed_seeds?: string[];
+  /** Why the AI's reply was unusable, when the likely cause is known (a local model's too-small context window). */
+  hint?: string;
 }
 
 /** One candidate pool a user's rows gathered (usually one, shared across rows). */

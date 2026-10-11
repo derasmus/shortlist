@@ -208,6 +208,7 @@ def history_mix(
     now: datetime | None = None,
     lookback_years: int = 0,
     searched: Set[tuple[int, MediaType]] = frozenset(),
+    seed_weight: float = 1.0,
 ) -> HistoryMix:
     """The rendered taste text for the pick prompt, and the favourite and older titles to search for.
 
@@ -217,6 +218,10 @@ def history_mix(
 
     "Don't seed" holds TMDB ids, and a watch on a legacy agent carries none until it is resolved, so a
     title the profile picked is resolved and, if blocked, taken out and the profile rebuilt, until none is.
+
+    ``seed_weight`` is what each favourite and older seed weighs in ranking once the AI search credits it to a
+    title (#152). A row passes the median weight of its recent seeds, so history competes as an average recent
+    watch does.
     """
     hidden: set[tuple[str, MediaType]] = set()
     while True:
@@ -238,18 +243,24 @@ def history_mix(
         hidden |= newly
     return HistoryMix(
         TastePrompt(profile.render(), True),
-        _seeds(profile.search_candidates(), resolve),
-        _seeds(profile.older_candidates(), resolve),
+        _seeds(profile.search_candidates(), resolve, seed_weight),
+        _seeds(profile.older_candidates(), resolve, seed_weight),
     )
 
 
-def _seeds(items: list[WatchedItem], resolve: Callable[[WatchedItem], int | None]) -> list[Seed]:
+def _seeds(items: list[WatchedItem], resolve: Callable[[WatchedItem], int | None], weight: float) -> list[Seed]:
     seeds: list[Seed] = []
     for item in items:
         tmdb_id = item.tmdb_id if item.tmdb_id is not None else resolve(item)
         if tmdb_id is not None:
             seeds.append(
-                Seed(tmdb_id=tmdb_id, title=item.title, media_type=item.media_type, watch_count=item.watch_count)
+                Seed(
+                    tmdb_id=tmdb_id,
+                    title=item.title,
+                    media_type=item.media_type,
+                    weight=weight,
+                    watch_count=item.watch_count,
+                )
             )
     return seeds
 

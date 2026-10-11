@@ -151,11 +151,22 @@ _WEB_SYSTEM = _WEB.head + _WEB.guide + _WEB.tail
 _OWNER_ADDS = "The server owner adds, for this row: "
 
 
-def _web_system(prompt: _WebPrompt, *, k: int, year: int, guidance: Guidance | None, wide: bool = False) -> str:
+# Asks which watched title a proposal follows from, so the pipeline can credit that watch (#152). Only the prompts
+# where the model chooses from the whole web carry it; the pick prompt already knows which search found each title.
+_BECAUSE = (
+    ' If one of the watched titles listed above is clearly why you chose a title, add "because": that watched '
+    "title exactly as listed. Leave it out when none is."
+)
+
+
+def _web_system(
+    prompt: _WebPrompt, *, k: int, year: int, guidance: Guidance | None, wide: bool = False, because: bool = False
+) -> str:
     """One web system prompt. Built-in guidance gives exactly the text this source has always sent.
 
     ``wide`` says the user message carries a full taste profile (#152), so the built-in guidance speaks of
-    the person's viewing history rather than their recent watches.
+    the person's viewing history rather than their recent watches. ``because`` asks for the optional field
+    naming the watched title behind each proposal.
 
     Owner text is spliced in AFTER ``str.format`` runs on Shortlist's own parts, so its braces are inert.
     """
@@ -167,7 +178,7 @@ def _web_system(prompt: _WebPrompt, *, k: int, year: int, guidance: Guidance | N
         middle = (prompt.guide_wide if wide else prompt.guide).format(**fmt)
     if g.extra:
         middle += _OWNER_ADDS + render_owner_text(g.extra, k=k, year=year) + " "
-    return prompt.head.format(**fmt) + middle + prompt.tail.format(**fmt)
+    return prompt.head.format(**fmt) + middle + prompt.tail.format(**fmt) + (_BECAUSE if because else "")
 
 
 def web_system_prompt(backend: str, *, k: int, year: int, guidance: Guidance | None) -> str:
@@ -202,6 +213,7 @@ def build_web_prompt(
     year: int | None = None,
     guidance: Guidance | None = None,
     taste: TastePrompt | None = None,
+    because: bool = False,
 ) -> tuple[str, str]:
     """(system, user) prompts for a web-search recommendation call (the ``llm_web`` source).
 
@@ -219,6 +231,7 @@ def build_web_prompt(
         taste: The history text to send (#152). A wide one replaces the recent-watches list and makes the
             built-in guidance speak of the viewing history; a recent-list one is ignored here, as the
             seeds already are that list. None sends exactly the text sent before.
+        because: Also ask for each title's optional ``because`` (#152). False sends exactly the text sent before.
 
     Returns:
         ``(system, user)`` — the system prompt carrying the rules, and the user prompt carrying the
@@ -230,7 +243,7 @@ def build_web_prompt(
     body = "\n".join(f"- {t}" for t in liked) or "- (no history yet — recommend broadly popular titles)"
     now = year if year is not None else datetime.now(UTC).year
     wide = taste is not None and taste.wide
-    system = _web_system(_WEB, k=k, year=now, guidance=guidance, wide=wide)
+    system = _web_system(_WEB, k=k, year=now, guidance=guidance, wide=wide, because=because)
     # A recent-list taste is ignored here: the seeds above are already scoped to the row.
     watched = taste.text if wide else f"They recently enjoyed:\n{body}"
     user = f"{watched}\n\nSearch the web for what to watch next, then recommend up to {k} titles."
@@ -294,15 +307,19 @@ def build_web_rag_prompt(
     year: int | None = None,
     guidance: Guidance | None = None,
     taste: TastePrompt | None = None,
+    because: bool = False,
 ) -> tuple[str, str]:
     """(system, user) prompts for recommending titles from web-search RESULTS the app already fetched.
 
     Unlike ``build_web_prompt`` (which asks a native-search model to search for itself), this embeds
     the article snippets we retrieved so an offline/local model can recommend from them. The caller
-    resolves each returned title to TMDB and library-verifies it, so a bad title reaches no row.
+    resolves each returned title to TMDB and library-verifies it, so a bad title reaches no row. ``because``
+    also asks for each title's optional ``because`` (#152).
     """
     now = year if year is not None else datetime.now(UTC).year
-    system = _web_system(_WEB_RAG, k=k, year=now, guidance=guidance, wide=taste is not None and taste.wide)
+    system = _web_system(
+        _WEB_RAG, k=k, year=now, guidance=guidance, wide=taste is not None and taste.wide, because=because
+    )
     blocks = [f"## {getattr(r, 'title', '')}\n{(getattr(r, 'text', '') or '')[:800]}" for r in results]
     context = "\n\n".join(blocks) or "(no web results found)"
     watched = taste.text if taste else taste_summary(profile)
@@ -526,7 +543,10 @@ def try_parse_web_titles(text: str, limit: int) -> list[dict] | None:
             continue
         media = "show" if str(item.get("media") or "").lower() in ("show", "tv", "series") else "movie"
         year = item.get("year")
-        out.append({"title": title, "year": int(year) if isinstance(year, int) else None, "media": media})
+        rec = {"title": title, "year": int(year) if isinstance(year, int) else None, "media": media}
+        if isinstance(item.get("because"), str):
+            rec["because"] = item["because"]
+        out.append(rec)
         if len(out) >= limit:
             break
     return out

@@ -250,6 +250,18 @@ class Candidate:
     # in engine/requests.py (and `_language_allowed`, its base-gate wrapper).
     language: str = ""
     seeds: list[Seed] = field(default_factory=list)  # every seed that suggested it
+    # The seeds the AI web search was credited to this title (#152): also in `seeds`, kept apart so the
+    # replay can rank the same pool with the credit taken off.
+    web_seeds: list[Seed] = field(default_factory=list)
+    # The affinity this title had before the web search credited it; None when the search found it alone.
+    # The replay restores it to rank the pool without the credit.
+    pre_web_affinity: float | None = None
+    # The genre coherence the credit priced a title the search found alone with (it is then the title's
+    # affinity); None when another source had already scored it or nothing credited it.
+    web_coherence: float | None = None
+    # Structured (Exa) path only: the best place the title held in a crediting seed's extraction list,
+    # 0 = first, 1 = last. None for RAG, native and `because` credit. Calibration input for the replay.
+    web_position: float | None = None
     rating_key: int | None = None  # set once matched to the library
     # Which candidate source(s) produced it. Ranking needs this: seedless sources (tmdb_discover,
     # llm_web) would otherwise be crowded out wholesale by the seeded ones — see ranking.pre_rank,
@@ -285,6 +297,17 @@ class Candidate:
     @property
     def top_seed(self) -> Seed | None:
         return max(self.seeds, key=lambda s: s.weight) if self.seeds else None
+
+    @property
+    def naming_seed(self) -> Seed | None:
+        """The strongest seed a similarity source gave it: what names a row and decides whether its seed moved.
+
+        Seeds only the AI web search credited are left out, so a row is named and rebuilt as it was before
+        that credit existed (#152).
+        """
+        credited = {(s.tmdb_id, s.media_type) for s in self.web_seeds}
+        own = [s for s in self.seeds if (s.tmdb_id, s.media_type) not in credited]
+        return max(own, key=lambda s: s.weight) if own else None
 
 
 @dataclass(frozen=True)
@@ -1310,6 +1333,13 @@ class EngineConfig:
     favourite_count: int = 0
     older_count: int = 0
     older_lookback_years: int = 0
+    # Whether an AI web-search title is credited to the watches that found it (#152). Internal, not a setting:
+    # False sends and ranks exactly as it did before the credit existed.
+    credit_web_titles: bool = True
+    # How that credit is priced, see `ranking.apply_web_credit_mode`. Internal, not a setting. Replay of 230
+    # held-out discoveries (2026-10-11): full credit cost 2-4 hits; 0.7 kept them and still roughly doubled
+    # the AI search's share of row titles.
+    web_credit_mode: str = "scaled:0.7"
     # When True (default), a DISABLED (opted-out) Shortlist user has EVERY shared row hidden too — even
     # public "Popular on this server" rows — so disabling someone removes them from Shortlist entirely.
     hide_shared_from_disabled: bool = True

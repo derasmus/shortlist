@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from functools import cached_property
+from statistics import median
 
 from loguru import logger
 
@@ -863,9 +864,9 @@ def _seed_moved(
             # "no seed" against a seeded pool. Kept, most of it would be carried forward under a new
             # "Because you watched X" title. A pool that still follows no watch (nor a library with no watch
             # of its own) is not a move, so neither rebuilds every night; once rebuilt, the row is stamped.
-            return lead_tmdb_id is not None and any(c.top_seed for c in sub)
+            return lead_tmdb_id is not None and any(c.naming_seed for c in sub)
         return was != lead_tmdb_id
-    current = next((c.top_seed for c in sub if c.top_seed), None)
+    current = next((c.naming_seed for c in sub if c.naming_seed), None)
     return named.seed_tmdb_id != (current.tmdb_id if current else None)
 
 
@@ -1148,7 +1149,7 @@ def _reseed_survivors(kept: list[Pick], sub: list[Candidate], seeds: list[Seed])
     carry. `reason` is left alone: it says how the pick was found, which is still true.
     """
     live = {(s.tmdb_id, s.media_type) for s in seeds}
-    tonight = {(c.tmdb_id, c.media_type): c.top_seed for c in sub}
+    tonight = {(c.tmdb_id, c.media_type): c.naming_seed for c in sub}
     out: list[Pick] = []
     for p in kept:
         if p.seed_tmdb_id is None or (p.seed_tmdb_id, p.media_type) in live:
@@ -1415,6 +1416,8 @@ def _gather_pool(
         favourite_count=favourite_count,
         older_seeds=older_seeds,
         older_count=older_count,
+        credit_web_titles=ctx.config.credit_web_titles,
+        web_credit_mode=ctx.config.web_credit_mode,
     )
     # `dropped` collects (candidate, reason) as filter_candidates works — observation only, it does
     # not change which candidates are kept.
@@ -2625,6 +2628,7 @@ class RowPolicy:
         if key not in self.taste_cache:
             history = _history_for_row(self.ctx, self.user.history, spec)
             if wide:
+                recent_weights = [s.weight for s in self.seeds_for(spec)[: self.effective_recent_count(spec)]]
                 self.taste_cache[key] = history_mix(
                     history,
                     blocked=self.user.blocked_seeds,
@@ -2635,6 +2639,7 @@ class RowPolicy:
                     now=_utc(self.ctx.run_at) or datetime.now(UTC),
                     lookback_years=self.cfg.older_lookback_years,
                     searched=searched,
+                    seed_weight=median(recent_weights) if recent_weights else 1.0,
                 )
             else:
                 prompt = recent_taste(history, blocked=self.user.blocked_seeds, ratings=self.ratings)

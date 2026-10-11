@@ -35,7 +35,7 @@ RUN_SUMMARY_KEYS = {
     # What the run measured about who can see whose rows. None when it did not measure.
     "privacy",
 }
-RUN_DETAIL_KEYS = RUN_SUMMARY_KEYS | {"users", "shared_rows"}
+RUN_DETAIL_KEYS = RUN_SUMMARY_KEYS | {"users", "shared_rows", "web_share"}
 RUN_USER_KEYS = {
     "username",
     "display_name",

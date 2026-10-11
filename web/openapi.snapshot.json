@@ -7812,6 +7812,16 @@
             },
             "title": "Users",
             "type": "array"
+          },
+          "web_share": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WebShareOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -12383,6 +12393,40 @@
           "inert"
         ],
         "title": "WebPromptPreviewOut",
+        "type": "object"
+      },
+      "WebShareOut": {
+        "additionalProperties": true,
+        "description": "The share of a run's delivered picks that the AI web search found (#152). None = no picks to share.",
+        "properties": {
+          "all": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "All"
+          },
+          "picked": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Picked"
+          }
+        },
+        "required": [
+          "picked",
+          "all"
+        ],
+        "title": "WebShareOut",
         "type": "object"
       },
       "WhatsNewOut": {

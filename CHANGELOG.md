@@ -18,6 +18,13 @@ All notable changes to this project are documented here. This project follows
 
 ### Fixed
 
+- **A SearXNG search whose engines were all failing no longer counts as "nothing found"** ([#152](https://github.com/stevezau/shortlist/issues/152)). An empty page from blocked or rate-limited engines was cached for a week as a real empty answer; it is now a failed search, retried next run.
+- **A local Ollama model that answered AI web search in prose now says why** ([#152](https://github.com/stevezau/shortlist/issues/152)). Ollama's default context window cuts off the start of Shortlist's prompt; the run trace and Settings Test now point to `OLLAMA_CONTEXT_LENGTH=16384`.
+- **AI web search titles now reach rows** ([#152](https://github.com/stevezau/shortlist/issues/152)). The titles the
+  AI found were ranked below every title TMDB suggested, so they almost never made it into a row: in one
+  46-person run, 65 of 92 "Picked for You" rows held none. Each is now credited to the watches that led to it,
+  so it competes with those watches' similar titles. The AI is asked to name the watched title behind each
+  proposal, which costs a few extra output tokens. **Run details** shows how much of a run the AI search supplied.
 - **Agregarr trailer placeholders no longer count as the real title** ([#151](https://github.com/stevezau/shortlist/issues/151)).
   Playing one of Agregarr's stand-in trailers used to count as watching the film, and as finishing a show
   that wasn't on the server yet. A title with both a real copy and a trailer could also put the trailer in a

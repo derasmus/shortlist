@@ -20,7 +20,7 @@ from shortlist.server.api.schemas_runs import (
     RunUserTraceOut,
 )
 from shortlist.server.auth import require_owner
-from shortlist.server.db.models import PickRow, RequestCandidate, Run, RunSharedRow, RunUser, iso_utc
+from shortlist.server.db.models import DEFAULT_SLUG, PickRow, RequestCandidate, Run, RunSharedRow, RunUser, iso_utc
 from shortlist.server.services.report_cache import invalidate_report_cache
 
 router = APIRouter(prefix="/runs", tags=["runs"], dependencies=[Depends(require_owner)])
@@ -160,6 +160,33 @@ async def clear_runs(request: Request) -> dict:
         session.commit()
     invalidate_report_cache()
     return {"deleted": deleted}
+
+
+def _web_share(users: list[dict]) -> dict | None:
+    """The share of this run's delivered picks that the AI web search found, for the default row and for all rows.
+
+    None when nothing in the run shows the AI search ran: no AI tokens, no Exa searches and no pick it found.
+    Counted per delivered pick, so a row spanning two libraries counts each library's copy.
+    """
+    delivered = [
+        (entry.get("row_slug"), pick.get("sources") or [])
+        for user in users
+        for entry in user["breakdown"]
+        for pick in entry.get("picks") or []
+    ]
+    ran = any(user["llm_tokens_by_step"].get("llm_web") or user["exa_searches"] for user in users) or any(
+        "llm_web" in sources for _, sources in delivered
+    )
+    if not ran:
+        return None
+
+    def share(sources: list[list[str]]) -> float | None:
+        return sum("llm_web" in s for s in sources) / len(sources) if sources else None
+
+    return {
+        "picked": share([sources for slug, sources in delivered if slug == DEFAULT_SLUG]),
+        "all": share([sources for _, sources in delivered]),
+    }
 
 
 def _with_provenance(breakdown: list[dict], picks: list) -> list[dict]:
@@ -407,7 +434,12 @@ async def get_run(run_id: int, request: Request) -> dict:
             }
             for row in sorted(run.shared_rows, key=lambda r: r.collection_slug)
         ]
-        return {**_run_summary(run), "users": users + pending, "shared_rows": shared_rows}
+        return {
+            **_run_summary(run),
+            "users": users + pending,
+            "shared_rows": shared_rows,
+            "web_share": _web_share(users),
+        }
 
 
 @router.get("/{run_id}/users/{user_id}/trace", response_model=RunUserTraceOut)

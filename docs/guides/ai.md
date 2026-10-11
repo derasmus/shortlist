@@ -78,6 +78,15 @@ Shortlist does the searching and hands the findings to your model, which buys yo
 4. **It is one clear choice.** Shortlist searches with exactly the backend you pick and no other, so
    a title is never searched — or billed — twice.
 
+### Ollama: raise the context window
+
+Ollama's default context window is only 2,048-4,096 tokens, and its
+OpenAI-compatible API cannot raise it per request. Shortlist's AI web-search prompts are about 3,000-5,000
+tokens, so Ollama cuts off the start of the prompt, the instructions, and the model answers in prose. The run
+trace then says "the local model answered in prose", and the Settings Test button warns when it can read the
+window. Set `OLLAMA_CONTEXT_LENGTH=16384` (or higher) on the Ollama server and restart it. In docker-compose:
+`environment: ["OLLAMA_CONTEXT_LENGTH=16384"]`.
+
 ### Exa or SearXNG?
 
 Both work with every provider, and both were measured end-to-end against the same watch history.

@@ -28,12 +28,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from statistics import median
 
 from shortlist.engine import candidates as candidates_mod
 from shortlist.engine import history as history_mod
 from shortlist.engine import ranking
 from shortlist.engine.clients.tmdb import Cache, TmdbClient
 from shortlist.engine.models import Candidate, EngineConfig, MediaType, UserProfile, WatchedItem
+from shortlist.engine.ranking import apply_web_credit_mode, without_web_credit
 from shortlist.engine.taste import history_mix, recent_taste
 
 #: Agreement among non-tied paired cases below which the aggregate direction means nothing at this
@@ -50,6 +52,35 @@ class HoldoutCase:
     #: Every OTHER watch strictly BEFORE `held_out.watched_at`. Strictly, because a later watch in
     #: the seed set is the whole experiment leaking into itself.
     history_before: list[WatchedItem]
+
+
+@dataclass(frozen=True)
+class RowTitle:
+    """One title of a replayed row, and whether the AI web search is what put it there (#152)."""
+
+    tmdb_id: int
+    media_type: MediaType
+    from_web: bool
+    #: The search found it, and only favourite or older watches' searches did: the share history adds.
+    via_history: bool = False
+
+
+@dataclass(frozen=True)
+class WebShare:
+    """How many titles of some replayed rows the AI web search found."""
+
+    titles: int
+    web: int
+    via_history: int
+
+
+@dataclass(frozen=True)
+class ModeResult:
+    """The row one gathered pool made when its AI-search credit was priced one way (`apply_web_credit_mode`)."""
+
+    rank: int | None
+    in_row: bool
+    row: tuple[RowTitle, ...]
 
 
 @dataclass(frozen=True)
@@ -88,6 +119,14 @@ class ReplayOutcome:
     #: Per kind of search ("recent", "favourite", "older"), the 1-based positions within that kind whose extraction
     #: held the title. "Would F favourites have found it" is then "any position <= F", for every F from one run.
     found_by_group: dict[str, list[int]] = field(default_factory=dict)
+    #: The row this case built, and the same pool ranked again with the AI-search credit taken off
+    #: (`without_web_credit`), so the credit's effect is read from one gather rather than two.
+    final_row: tuple[RowTitle, ...] = ()
+    final_row_uncredited: tuple[RowTitle, ...] = ()
+    rank_uncredited: int | None = None
+    in_final_row_uncredited: bool = False
+    #: The same pool ranked under each requested credit mode, by mode name.
+    by_mode: dict[str, ModeResult] = field(default_factory=dict)
 
     @property
     def hit(self) -> bool:
@@ -154,6 +193,27 @@ def holdout_cases(
     ]
 
 
+def mode_web_share(outcomes: list[ReplayOutcome], mode: str) -> WebShare:
+    """How many of the replayed rows' titles the AI web search found, with the credit priced as ``mode``."""
+    titles = [title for o in outcomes if mode in o.by_mode for title in o.by_mode[mode].row]
+    return WebShare(
+        titles=len(titles),
+        web=sum(t.from_web for t in titles),
+        via_history=sum(t.via_history for t in titles),
+    )
+
+
+def row_web_share(outcomes: list[ReplayOutcome], *, credited: bool) -> WebShare:
+    """How many of the replayed rows' titles the AI web search found, with the credit on or off."""
+    rows = [o.final_row if credited else o.final_row_uncredited for o in outcomes]
+    titles = [title for row in rows for title in row]
+    return WebShare(
+        titles=len(titles),
+        web=sum(t.from_web for t in titles),
+        via_history=sum(t.via_history for t in titles),
+    )
+
+
 def replay_case(
     case: HoldoutCase,
     config: EngineConfig,
@@ -167,6 +227,7 @@ def replay_case(
     trakt=None,
     search=None,
     web_search_cache: Cache | None = None,
+    modes: tuple[str, ...] = (),
 ) -> ReplayOutcome:
     """Rebuild the pool from `case.history_before` alone and report where the hidden title landed.
 
@@ -207,6 +268,8 @@ def replay_case(
                 older=config.older_count,
                 now=case.held_out.watched_at,
                 lookback_years=config.older_lookback_years,
+                # As a row weighs them: an average recent watch, so history competes with the recent seeds.
+                seed_weight=median(s.weight for s in seeds[: config.recent_count]) if seeds else 1.0,
             )
         else:
             # Arm A sends what a run sends for a films-and-TV row over every library: the recent list without
@@ -230,6 +293,9 @@ def replay_case(
         favourite_count=config.favourite_count if taste is not None and taste.wide else 0,
         older_seeds=older_seeds,
         older_count=config.older_count if taste is not None and taste.wide else 0,
+        credit_web_titles=config.credit_web_titles,
+        # Always gathered as "full": the modes below price this one pool, so they differ in nothing else.
+        web_credit_mode="full",
     )
     gathered = any((c.tmdb_id, c.media_type) == key for c in pool)
     held_title = case.held_out.title.strip().lower()
@@ -248,24 +314,50 @@ def replay_case(
 
     dropped: list[tuple[Candidate, str]] = []
     watched = {(w.tmdb_id, w.media_type) for w in case.history_before if w.tmdb_id is not None}
-    in_library = candidates_mod.filter_candidates(
-        pool,
-        library_index,
-        watched_tmdb_ids=watched,
-        excluded_genres=set(),
-        dropped=dropped,
-    )
-    drop_reason = next((reason for c, reason in dropped if (c.tmdb_id, c.media_type) == key), "")
+    history_keys = {(s.tmdb_id, s.media_type) for s in (*favourite_seeds, *older_seeds)}
 
-    ranked = ranking.cut_for_recency(
-        in_library,
-        [MediaType.MOVIE, MediaType.SHOW],
-        config.candidates_pre_rank,
-        config.recency,
-        run_year,
-    )
+    def build_row(candidates: list[Candidate], *, record_drops: bool) -> tuple[list[Candidate], list[Candidate]]:
+        in_library = candidates_mod.filter_candidates(
+            candidates,
+            library_index,
+            watched_tmdb_ids=watched,
+            excluded_genres=set(),
+            dropped=dropped if record_drops else [],
+        )
+        ranked = ranking.cut_for_recency(
+            in_library,
+            [MediaType.MOVIE, MediaType.SHOW],
+            config.candidates_pre_rank,
+            config.recency,
+            run_year,
+        )
+        return ranked, ranking.diversify_by_seed(ranked, config.row_size)
+
+    def row_titles(final: list[Candidate]) -> tuple[RowTitle, ...]:
+        return tuple(
+            RowTitle(
+                tmdb_id=c.tmdb_id,
+                media_type=c.media_type,
+                from_web="llm_web" in c.sources,
+                via_history=bool(c.web_seeds)
+                and all((seed.tmdb_id, seed.media_type) in history_keys for seed in c.web_seeds),
+            )
+            for c in final
+        )
+
+    ranked, final = build_row(pool, record_drops=True)
+    drop_reason = next((reason for c, reason in dropped if (c.tmdb_id, c.media_type) == key), "")
     rank = next((i + 1 for i, c in enumerate(ranked) if (c.tmdb_id, c.media_type) == key), None)
-    final = ranking.diversify_by_seed(ranked, config.row_size)
+    ranked_off, final_off = build_row(without_web_credit(pool), record_drops=False)
+    by_mode: dict[str, ModeResult] = {}
+    for mode in modes:
+        ranked_m, final_m = build_row(apply_web_credit_mode(pool, mode), record_drops=False)
+        by_mode[mode] = ModeResult(
+            rank=next((i + 1 for i, c in enumerate(ranked_m) if (c.tmdb_id, c.media_type) == key), None),
+            in_row=any((c.tmdb_id, c.media_type) == key for c in final_m),
+            row=row_titles(final_m),
+        )
+    rank_off = next((i + 1 for i, c in enumerate(ranked_off) if (c.tmdb_id, c.media_type) == key), None)
 
     return ReplayOutcome(
         case=case,
@@ -284,6 +376,11 @@ def replay_case(
         tokens=sum(stats.tokens_by_source.values()),
         new_searches=stats.exa_searches,
         found_by_group=found_by_group,
+        final_row=row_titles(final),
+        final_row_uncredited=row_titles(final_off),
+        rank_uncredited=rank_off,
+        in_final_row_uncredited=any((c.tmdb_id, c.media_type) == key for c in final_off),
+        by_mode=by_mode,
     )
 
 

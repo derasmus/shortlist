@@ -95,6 +95,7 @@ class AnthropicCurator:
         *,
         guidance: Guidance | None = None,
         taste: TastePrompt | None = None,
+        because: bool = False,
     ) -> list[dict]:
         """Propose up to k titles to watch next via Claude's web-search tool (the ``llm_web`` source).
 
@@ -103,11 +104,12 @@ class AnthropicCurator:
         for any other failure (unexpected response shape, etc.), so a run never fails here.
 
         ``guidance`` is the row's AI instructions (#138); None sends the built-in prompt. ``taste`` is the
-        history text (#152); only a wide one changes the prompt.
+        history text (#152); only a wide one changes the prompt. ``because`` also asks the model
+        which watched title each proposal follows from (#152).
         """
         import anthropic
 
-        system, user = build_web_prompt(profile, seeds, k, guidance=guidance, taste=taste)
+        system, user = build_web_prompt(profile, seeds, k, guidance=guidance, taste=taste, because=because)
         controls = self._provider_controls
         output_tokens = controls.output_limit(2048) if controls is not None else 2048
         tool_uses = (

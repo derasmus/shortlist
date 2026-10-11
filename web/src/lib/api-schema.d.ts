@@ -6689,6 +6689,7 @@ export interface components {
             trigger: "schedule" | "manual" | "wizard" | "resume" | "assistant";
             /** Users */
             users: components["schemas"]["RunUserOut"][];
+            web_share?: components["schemas"]["WebShareOut"] | null;
         } & {
             [key: string]: unknown;
         };
@@ -8512,6 +8513,18 @@ export interface components {
             inert: boolean;
             /** System */
             system: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * WebShareOut
+         * @description The share of a run's delivered picks that the AI web search found (#152). None = no picks to share.
+         */
+        WebShareOut: {
+            /** All */
+            all: number | null;
+            /** Picked */
+            picked: number | null;
         } & {
             [key: string]: unknown;
         };

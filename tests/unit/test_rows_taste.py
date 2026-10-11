@@ -157,7 +157,7 @@ class TestWhatReachesTheGather:
         spec = _row(max_seeds=1)
         policy.specs = [spec]
         policy.pools_for(spec)
-        assert curator.calls == [{}]
+        assert curator.calls == [{"because": True}]
 
 
 class TestHistoryMixCounts:

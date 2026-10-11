@@ -378,6 +378,23 @@ describe("TraceView", () => {
     expect(within(searched).getByText(/Dune, Arrival/)).toBeTruthy();
   });
 
+  it("shows why a local model's reply was unusable", () => {
+    const data = okTrace();
+    const gather = data.trace.gathers?.[0];
+    if (!gather) throw new Error("fixture must have a gather");
+    gather.sources = [
+      ...(gather.sources ?? []),
+      { source: "llm_web", status: "ok", contributed: 0, detail: "" },
+    ];
+    gather.web = {
+      mode: "exa",
+      searches: [],
+      hint: "the local model answered in prose — set OLLAMA_CONTEXT_LENGTH=16384 on the Ollama server",
+    };
+    render(<TraceView data={data} />);
+    expect(screen.getByText(/OLLAMA_CONTEXT_LENGTH=16384/)).toBeTruthy();
+  });
+
   it("explains how the shortlist was ordered, grounded in this library's picks — and says no AI ranks", () => {
     const data = okTrace();
     // Give the delivered pick a source + seed_title so the "grounded in this row" line has real numbers.

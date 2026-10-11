@@ -1832,6 +1832,10 @@ function WebSourceCard({
           </p>
         )}
 
+        {web?.hint && (
+          <p className="text-xs text-warning">{web.hint}</p>
+        )}
+
         {proposed.length > 0 && (
           <div className="space-y-1.5">
             <p className="text-xs font-medium">

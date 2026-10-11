@@ -166,7 +166,9 @@ def build_picks(
         chosen = ranking.diversify_by_seed(candidates, k)
     picks: list[Pick] = []
     for c in chosen:
-        seed = c.top_seed
+        # The seed that NAMES the row, never one only the AI web search credited (#152): a name and the
+        # decision to rebuild it follow the similarity sources, as they did before that credit.
+        seed = c.naming_seed
         picks.append(
             Pick(
                 tmdb_id=c.tmdb_id,
