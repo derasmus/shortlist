@@ -2186,6 +2186,7 @@ class TestATitleThatCannotBeSentNeverHoldsASlot:
         [
             {"service": "sonarr", "monitor": "all", "season_count": 1},  # sent to Sonarr; the row now uses Overseerr
             {"service": "overseerr", "monitor": "lastSeason", "season_count": 1},  # refused under another mode
+            {"service": "overseerr", "destination": "http://other.test", "monitor": "all", "season_count": 1},
         ],
     )
     def test_a_change_of_setup_lifts_the_hold(self, monkeypatch, target):

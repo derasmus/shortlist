@@ -444,7 +444,8 @@ def recently_refused_requests(session: Session) -> dict[tuple[int, str], Refusal
     cutoff = datetime.now(UTC) - REFUSAL_HOLD
     claims = session.scalars(
         select(AssistantRequestDispatch)
-        .where(AssistantRequestDispatch.finished_at.is_not(None))
+        # A day of slack in SQL covers a stored time with no zone; `utc()` below makes the exact cut.
+        .where(AssistantRequestDispatch.finished_at >= cutoff - timedelta(days=1))
         .order_by(AssistantRequestDispatch.finished_at)
     )
     latest: dict[tuple[int, str], AssistantRequestDispatch] = {}

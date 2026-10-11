@@ -1286,10 +1286,13 @@ class Refusal(NamedTuple):
 
 
 def _same_setup(cfg: RequestConfig, media_type: MediaType, target: dict) -> bool:
-    """Whether ``cfg`` would send this title the way the refused send went; a change of app or of how
-    much of a show to grab is a new attempt, so the hold lifts."""
+    """Whether ``cfg`` would send this title the way the refused send went; a change of app, of server or
+    of how much of a show to grab is a new attempt, so the hold lifts."""
     by_arr = "radarr" if media_type is MediaType.MOVIE else "sonarr"
     if target.get("service") != ("overseerr" if cfg.target == "overseerr" else by_arr):
+        return False
+    service = cfg.overseerr if cfg.target == "overseerr" else cfg.radarr if by_arr == "radarr" else cfg.sonarr
+    if "destination" in target and service and target["destination"] != service.url.rstrip("/"):
         return False
     if media_type is MediaType.MOVIE:
         return True
