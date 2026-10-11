@@ -100,6 +100,7 @@ class FakeArr:
         extra_tags: set[str] | None = None,
         monitor: str = "all",
         season_count: int = 1,
+        tmdb_seasons: dict[int, bool] | None = None,
     ) -> tuple[str, str, str | None]:
         self.series_calls.append((tvdb_id, dry_run))
         self.monitor_calls.append(monitor)
