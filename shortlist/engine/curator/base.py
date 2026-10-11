@@ -213,7 +213,6 @@ def build_web_prompt(
     year: int | None = None,
     guidance: Guidance | None = None,
     taste: TastePrompt | None = None,
-    because: bool = False,
 ) -> tuple[str, str]:
     """(system, user) prompts for a web-search recommendation call (the ``llm_web`` source).
 
@@ -231,7 +230,6 @@ def build_web_prompt(
         taste: The history text to send (#152). A wide one replaces the recent-watches list and makes the
             built-in guidance speak of the viewing history; a recent-list one is ignored here, as the
             seeds already are that list. None sends exactly the text sent before.
-        because: Also ask for each title's optional ``because`` (#152). False sends exactly the text sent before.
 
     Returns:
         ``(system, user)`` — the system prompt carrying the rules, and the user prompt carrying the
@@ -243,7 +241,7 @@ def build_web_prompt(
     body = "\n".join(f"- {t}" for t in liked) or "- (no history yet — recommend broadly popular titles)"
     now = year if year is not None else datetime.now(UTC).year
     wide = taste is not None and taste.wide
-    system = _web_system(_WEB, k=k, year=now, guidance=guidance, wide=wide, because=because)
+    system = _web_system(_WEB, k=k, year=now, guidance=guidance, wide=wide)
     # A recent-list taste is ignored here: the seeds above are already scoped to the row.
     watched = taste.text if wide else f"They recently enjoyed:\n{body}"
     user = f"{watched}\n\nSearch the web for what to watch next, then recommend up to {k} titles."

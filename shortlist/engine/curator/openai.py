@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import copy
-
 from loguru import logger
 
 from shortlist.engine.curator.base import (
@@ -71,18 +69,6 @@ _TITLES_FORMAT: dict = {
         },
     }
 }
-
-
-def _titles_format(because: bool) -> dict:
-    """``_TITLES_FORMAT``, with the nullable ``because`` field strict mode needs listed as required when asked for."""
-    if not because:
-        return _TITLES_FORMAT
-    item = copy.deepcopy(_TITLES_FORMAT["format"]["schema"]["properties"]["titles"]["items"])
-    item["properties"]["because"] = {"type": ["string", "null"]}
-    item["required"] = [*item["required"], "because"]
-    fmt = copy.deepcopy(_TITLES_FORMAT)
-    fmt["format"]["schema"]["properties"]["titles"]["items"] = item
-    return fmt
 
 
 class OpenAICurator:
@@ -161,7 +147,6 @@ class OpenAICurator:
         *,
         guidance: Guidance | None = None,
         taste: TastePrompt | None = None,
-        because: bool = False,
     ) -> list[dict]:
         """Propose up to k titles to watch next via the Responses API web-search tool (``llm_web``).
 
@@ -170,14 +155,13 @@ class OpenAICurator:
         for any other failure, so a run never fails here.
 
         ``guidance`` is the row's AI instructions (#138); None sends the built-in prompt. ``taste`` is the
-        history text (#152); only a wide one changes the prompt. ``because`` also asks the model
-        which watched title each proposal follows from (#152), and lets the response schema carry it.
+        history text (#152); only a wide one changes the prompt.
         """
         import openai
 
-        system, user = build_web_prompt(profile, seeds, k, guidance=guidance, taste=taste, because=because)
+        system, user = build_web_prompt(profile, seeds, k, guidance=guidance, taste=taste)
         try:
-            r = self._web_search_call(system, user, with_schema=self._schema_supported, because=because)
+            r = self._web_search_call(system, user, with_schema=self._schema_supported)
         except openai.OpenAIError as e:
             if self._provider_controls is not None:
                 logger.warning("llm_web (openai) failed ({})", type(e).__name__)
@@ -201,7 +185,7 @@ class OpenAICurator:
             self.last_output_tokens = getattr(usage, "output_tokens", 0) or 0
         return parse_web_titles(getattr(r, "output_text", "") or "", k)
 
-    def _web_search_call(self, system: str, user: str, *, with_schema: bool, because: bool = False):
+    def _web_search_call(self, system: str, user: str, *, with_schema: bool):
         """One Responses API call with the web-search tool, optionally under a response schema.
 
         `search_context_size: high` scored best of the three sizes on a live run (12 of 12 resolvable
@@ -228,7 +212,7 @@ class OpenAICurator:
             # Structured output DOES combine with web search here — measured on gpt-4o-mini and
             # gpt-4.1-mini, 12 of 12 resolvable both times, and it cut output tokens from ~300 to 212
             # because the model stops narrating around the JSON.
-            kwargs["text"] = _titles_format(because)
+            kwargs["text"] = _TITLES_FORMAT
         controls = self._provider_controls
         if controls is not None:
             if controls.max_output_tokens is not None:

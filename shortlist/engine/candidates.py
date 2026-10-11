@@ -16,7 +16,6 @@ recommendation engine is not locked to TMDB's per-seed similarity. Sources today
 
 from __future__ import annotations
 
-import inspect
 import json
 import math
 import re
@@ -225,8 +224,9 @@ def web_recommendations(
     but not the seeds: the model picks its own.
 
     ``credit`` (#152) gives each proposal the seeds it is credited to, as ``rec["for"]``: the watches whose search
-    found it, else the watched title the model named as its ``because``, which the native and snippet prompts
-    ask for. Without it the prompts and the proposals are what they always were.
+    found it, else the watched title the model named as its ``because``, which the snippet prompt asks for. Only
+    the external paths credit: native titles stay uncredited, as crediting them cost hits (measured 2026-10-11).
+    Without it the prompts and the proposals are what they always were.
     """
     web_trace: dict = {"mode": mode}
     stats.trace["web"] = web_trace
@@ -257,14 +257,8 @@ def web_recommendations(
         _clear_last_tokens(curator)
         # Only passed when there is one, so a curator that predates the argument is called as it always was.
         native_extras = {"taste": taste} if taste is not None and taste.wide else {}
-        asks_because = credit and _accepts_because(curator.recommend_web)
-        if asks_because:
-            native_extras["because"] = True
         recs = curator.recommend_web(profile, seeds, k, guidance=guidance, **native_extras)
         stats.add_tokens("llm_web", getattr(curator, "last_tokens", 0), getattr(curator, "last_output_tokens", 0))
-        if asks_because:
-            named = _seeds_to_search(seeds, recent_count, favourite_seeds, favourite_count, older_seeds, older_count)
-            _credit_by_because(recs, [seed for seed, _ in named])
     recs = _drop_watched_proposals(recs, seeds, profile, web_trace)
     # Cap here, not before the filter: the keyless path hands back every extracted title so that
     # dropping watched ones eats into the surplus rather than into the row. A no-op for the model
@@ -549,15 +543,6 @@ def _seeds_to_search(
         searched += [(seed, kind) for seed in chosen]
         already |= {(seed.tmdb_id, seed.media_type) for seed in chosen}
     return searched
-
-
-def _accepts_because(recommend_web) -> bool:
-    """Whether a curator's ``recommend_web`` takes ``because``, so one written before it is still called as it was."""
-    try:
-        params = inspect.signature(recommend_web).parameters
-    except (TypeError, ValueError):
-        return False
-    return "because" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 _NON_WORD = re.compile(r"[^a-z0-9]+")

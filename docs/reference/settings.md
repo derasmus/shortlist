@@ -266,10 +266,11 @@ source's dependency is missing, the Settings UI keeps the toggle usable but show
 **How AI web search titles rank.** A title the web search finds counts for the watches whose search found it, the
 same as a title TMDB suggests for them: it competes with those watches' similar titles and takes its place among
 the row's tastes. With Exa that is the searches that listed it; with SearXNG, the searches whose articles name
-it; with the AI's own search, the watched title the AI says it chose it for. A title nothing can be credited to
-ranks as it used to, behind the credited ones. Favourites and older watches count for as much as an average
-recent watch. The AI is asked for that one extra word per title ("because"), so a native or SearXNG search
-costs a few more output tokens. Exa searches, and the picks the AI makes from them, cost the same as before.
+it, else the watched title the AI says it chose it for. A title nothing can be credited to ranks as it used to,
+behind the credited ones. Favourites and older watches count for as much as an average recent watch. With the
+AI's own search, titles are not credited: tested against what people went on to watch, crediting them made rows
+less accurate, so they rank as before. SearXNG asks the AI for one extra word per title ("because"), a few more
+output tokens. Exa searches, the picks the AI makes from them, and the AI's own search cost the same as before.
 **Run details** shows the share of a run's picks the AI search found, for all rows and for Picked for You.
 
 Config changes reconcile onto Plex immediately, without waiting for a run. Deleting a row, disabling

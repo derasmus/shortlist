@@ -38,8 +38,9 @@ All notable changes to this project are documented here. This project follows
 - **AI web search titles now reach rows** ([#152](https://github.com/stevezau/shortlist/issues/152)). The titles the
   AI found were ranked below every title TMDB suggested, so they almost never made it into a row: in one
   46-person run, 65 of 92 "Picked for You" rows held none. Each is now credited to the watches that led to it,
-  so it competes with those watches' similar titles. The AI is asked to name the watched title behind each
-  proposal, which costs a few extra output tokens. **Run details** shows how much of a run the AI search supplied.
+  so it competes with those watches' similar titles (with Exa or SearXNG; the AI's own search is unchanged, as
+  crediting it made rows less accurate). With SearXNG the AI is asked to name the watched title behind each
+  proposal, a few extra output tokens. **Run details** shows how much of a run the AI search supplied.
 - **Agregarr trailer placeholders no longer count as the real title** ([#151](https://github.com/stevezau/shortlist/issues/151)).
   Playing one of Agregarr's stand-in trailers used to count as watching the film, and as finishing a show
   that wasn't on the server yet. A title with both a real copy and a trailer could also put the trailer in a

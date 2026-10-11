@@ -1,5 +1,6 @@
 """Calibration modes for the AI-search credit, applied to one gathered pool (#152)."""
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -8,7 +9,7 @@ from shortlist.engine.candidates import gather_candidates
 from shortlist.engine.clients.tmdb import POSITION_DECAY
 from shortlist.engine.models import Candidate, MediaType, Seed
 from shortlist.engine.ranking import WEB_CREDIT_MODES, apply_web_credit_mode, without_web_credit
-from tests.unit.test_candidates_credit import _BySeedSearch, _gather, _pick, _tmdb
+from tests.unit.test_candidates_credit import _BySeedSearch, _gather, _pick, _snippets, _tmdb
 from tests.unit.test_candidates_favourites import _Cache, _Curator, seed
 
 A = Seed(1, "A", MediaType.MOVIE)
@@ -96,10 +97,8 @@ def test_gather_records_the_position_in_each_extraction_and_keeps_the_best(mock_
 
 
 def test_a_title_credited_by_because_has_no_position(mock_tmdb):
-    from tests.unit.test_candidates_credit import _NativeCurator
-
-    curator = _NativeCurator([{"title": "N", "year": 2020, "media": "movie", "because": "R1"}])
-    pool = _gather(mock_tmdb, None, curator, [seed(1, "R1")], mode="native")
+    reply = json.dumps([{"title": "N", "year": 2020, "media": "movie", "because": "r1"}])
+    pool = _gather(mock_tmdb, _snippets(), _Curator(reply), [seed(1, "R1")], mode="searxng")
     assert pool["N"].web_seeds and pool["N"].web_position is None
 
 

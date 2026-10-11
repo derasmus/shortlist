@@ -238,59 +238,23 @@ def test_the_structured_pick_prompt_never_asks_for_because(mock_tmdb):
     assert "because" not in curator.system
 
 
-def test_the_native_path_credits_a_listed_because(mock_tmdb):
-    recs = [
-        {"title": "Mentioned", "year": 2020, "media": "movie", "because": "R1"},
-        {"title": "Stranger", "year": 2020, "media": "movie", "because": "Never Watched"},
-        {"title": "Plain", "year": 2020, "media": "movie"},
-    ]
-    curator = _NativeCurator(recs)
-    pool = _gather(mock_tmdb, None, curator, [seed(1, "R1")], mode="native")
-    assert curator.kwargs["because"] is True
-    assert [s.title for s in pool["Mentioned"].seeds] == ["R1"]
-    assert pool["Stranger"].seeds == [] and pool["Plain"].seeds == []
-
-
-def test_the_native_path_accepts_a_favourite_as_because(mock_tmdb):
-    recs = [{"title": "Mentioned", "year": 2020, "media": "movie", "because": "F1"}]
-    pool = _gather(
-        mock_tmdb,
-        None,
-        _NativeCurator(recs),
-        [seed(1, "R1")],
-        mode="native",
-        favourite_seeds=[seed(10, "F1")],
-        favourite_count=1,
-    )
-    assert [s.title for s in pool["Mentioned"].seeds] == ["F1"]
-
-
-def test_the_native_path_passes_no_because_when_credit_is_off(mock_tmdb):
+def test_the_native_path_neither_asks_for_nor_uses_because(mock_tmdb):
+    """Measured 2026-10-11 (46 held-out discoveries): crediting native titles to their because cost hits."""
     recs = [{"title": "Mentioned", "year": 2020, "media": "movie", "because": "R1"}]
     curator = _NativeCurator(recs)
-    pool = _gather(mock_tmdb, None, curator, [seed(1, "R1")], mode="native", credit=False)
+    pool = _gather(mock_tmdb, None, curator, [seed(1, "R1")], mode="native")
     assert "because" not in curator.kwargs
-    assert pool["Mentioned"].seeds == []
-
-
-def test_a_native_curator_that_predates_because_is_still_called_as_before(mock_tmdb):
-    class _Old:
-        supports_native_web_search = True
-
-        def recommend_web(self, profile, seeds, k, *, guidance=None):
-            return [{"title": "Plain", "year": 2020, "media": "movie"}]
-
-    pool = _gather(mock_tmdb, None, _Old(), [seed(1, "R1")], mode="native")
-    assert "Plain" in pool
+    assert pool["Mentioned"].seeds == [] and pool["Mentioned"].web_seeds == []
+    assert pool["Mentioned"].affinity == 1.0
 
 
 def test_the_prompts_are_unchanged_without_because():
     profile = SimpleNamespace(history=[])
-    for build in (build_web_prompt, build_web_rag_prompt):
-        args = (profile, [seed(1, "R1")] if build is build_web_prompt else [], 10)
-        assert build(*args, year=2026) == build(*args, year=2026, because=False)
-        assert "because" not in build(*args, year=2026)[0]
-        assert '"because"' in build(*args, year=2026, because=True)[0]
+    assert "because" not in build_web_prompt(profile, [seed(1, "R1")], 10, year=2026)[0]
+    args = (profile, [], 10)
+    assert build_web_rag_prompt(*args, year=2026) == build_web_rag_prompt(*args, year=2026, because=False)
+    assert "because" not in build_web_rag_prompt(*args, year=2026)[0]
+    assert '"because"' in build_web_rag_prompt(*args, year=2026, because=True)[0]
     assert "because" not in build_web_pick_prompt(profile, [], 10, year=2026)[0]
 
 
@@ -401,7 +365,7 @@ def test_a_title_discover_also_found_is_priced_like_one_the_web_found_alone(mock
 def test_the_because_prompt_asks_for_every_title():
     """Measured 2026-10-11 on 4 people with native search: "if one is clearly why" got a because on 28 of 160
     titles; asking for every title got 156 of 156, 146 naming a listed watch exactly."""
-    system = build_web_prompt(SimpleNamespace(history=[]), [seed(1, "R1")], 10, year=2026, because=True)[0]
+    system = build_web_rag_prompt(SimpleNamespace(history=[]), [], 10, year=2026, because=True)[0]
     assert "For each title" in system
 
 
