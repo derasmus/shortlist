@@ -6,6 +6,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-12
+
 ### Added
 
 - **AI web search can look further back in someone's history** ([#152](https://github.com/stevezau/shortlist/issues/152)).
