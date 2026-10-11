@@ -20,12 +20,18 @@ reviewer who rediscovers a finding checks the history before fixing it again.
   0.02 → 0.03, MRR 0.014 → 0.016, better/worse/same 22/17/191 — 56% agreement, below the 70% the sample needs, so
   noise. That run had only TMDB similar on and no AI, and half its 230 cases were not discoveries (99 shows
   already started, 17 rewatches); the replay now keeps discoveries only and runs every configured source.
-- #152 replay (2026-10-11, production copy, 138 discoveries, 46 people, production sources incl. Exa + Claude):
-  AI picked / in row: A today 10/9, A rerun 9/8 (noise floor), B wide taste profile 9/9, C + 8 favourite
-  searches 7/9 (search found 25 -> 29), D no AI pick (first 40 of the extraction) -/10. Nothing beats noise, so
-  the wide profile and favourite searches stay replay-only (`EngineConfig.taste_mode`, `favourite_count`).
-  The loss is the pick step: the search finds ~18% of discoveries, the AI keeps ~7%. Next candidates: give the
-  pick step the library (only in-library titles) or let code rank the whole extraction uncapped, then replay.
+- #152 AI-search credit (shipped d7debc42, `web_credit_mode="scaled:0.7"`). Live, fresh rows for 6 people:
+  11% of row titles from the AI search (recent only), 18% with 6/6 history, 23% with 10/10; MooHouse alone
+  went from 0 of 120 (run 17, before) to 35 of 240 (run 19). Left open:
+  - Native search (Claude's own web search) gains least: 3% -> 4% in a partial replay. How often the model's
+    `because` matches a listed watch is unmeasured; the probe (`_credit_by_because` wrapped, 4 native cases)
+    hit an empty Anthropic balance. Measure it before changing anything.
+  - SearXNG + Claude was never replayed with `scaled:0.7` (credit ran out). The older full-credit replay
+    (s4): in row 4 vs 3, AI share 8% vs 4% of 1,380 titles.
+  - Local model (Exa + llama3.1:8b, 16k context) with 6/6 history: held-out title in row 4 -> 1 of 46 under
+    credit (0/0: 4 -> 4). Small sample; replay again with more cases before tuning.
+  - `replay.py` gathers with "full", so the headline `in_row` is "full", not production; read
+    `by_mode["scaled:0.7"]` (architecture review LOW, 2026-10-11).
 
 **Test and structure leftovers:**
 
