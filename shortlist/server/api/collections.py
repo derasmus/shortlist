@@ -206,6 +206,8 @@ class CollectionOut(PassthroughModel):
     idle_hold_days: int | None
     recency: float | None
     recent_count: int | None
+    favourite_count: int | None
+    older_count: int | None
     max_seeds: int | None
     max_runtime: int | None
     min_year: int | None
@@ -237,6 +239,14 @@ class CollectionOut(PassthroughModel):
             "(Sonarr's Add Series 'Monitor' choice); null inherits the global requests.sonarr.monitor."
         ),
         json_schema_extra={"enum": [*SONARR_MONITOR_MODES, None]},
+    )
+    req_season_count: int | None = Field(
+        description=(
+            "How many seasons 'firstSeason'/'lastSeason' take for this row's requests; "
+            "null inherits the global requests.season_count."
+        ),
+        ge=1,
+        le=99,
     )
     req_language_mode: str | None = Field(
         description=(

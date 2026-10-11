@@ -43,6 +43,9 @@ SETTING_VALUES = {
     "recommendations.franchise": 0.4,
     "recommendations.cast": 0.2,
     "recommendations.recent_count": 8,
+    "recommendations.favourite_count": 3,
+    "recommendations.older_count": 2,
+    "recommendations.older_lookback_years": 3,
     "recommendations.max_seeds": 16,
     "recommendations.rating_source": "imdb",
     "recommendations.min_history": 5,
@@ -76,6 +79,7 @@ SETTING_VALUES = {
     "requests.sonarr.quality_profile_id": 3,
     "requests.sonarr.root_folder": "/synthetic/shows",
     "requests.sonarr.monitor": "firstSeason",
+    "requests.season_count": 2,
     "notify.webhook.enabled": True,
     "notify.webhook.events": ["run.finished", "privacy.exposure"],
     "notify.webhook.auth_header_name": "X-Synthetic-Authorization",
@@ -101,7 +105,7 @@ SETTING_VALUES = {
 def test_the_roundtrip_cases_cover_exactly_every_advertised_writable_setting():
     writable = {item.key for item in get_settings_catalog() if item.assistant_writable}
     assert set(SETTING_VALUES) == writable
-    assert len(writable) == 72
+    assert len(writable) == 76
 
 
 @pytest.mark.parametrize(

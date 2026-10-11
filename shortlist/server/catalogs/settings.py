@@ -496,6 +496,35 @@ _SETTINGS: tuple[SettingDefinition, ...] = (
         effects=(*_PROVIDER_EFFECTS, FUTURE_ROW),
     ),
     _setting(
+        "recommendations.favourite_count",
+        "Web-search favourites count",
+        "How many long-time favourites the AI web-search source searches for each row, on top of the recent "
+        "watches; zero searches none.",
+        SettingGroup.RECOMMENDATIONS,
+        range=NumericRange(minimum=0, maximum=10, unit="watched titles"),
+        effects=(*_PROVIDER_EFFECTS, FUTURE_ROW),
+    ),
+    _setting(
+        "recommendations.older_count",
+        "Web-search older watches count",
+        "How many older watches, sampled across their history and rotating weekly, the AI web-search source "
+        "searches for each row, on top of the recent watches; zero searches none.",
+        SettingGroup.RECOMMENDATIONS,
+        range=NumericRange(minimum=0, maximum=10, unit="watched titles"),
+        effects=(*_PROVIDER_EFFECTS, FUTURE_ROW),
+    ),
+    _setting(
+        "recommendations.older_lookback_years",
+        "Older watches look-back",
+        "Only watches from this many years back are sampled as older watches; zero means any time.",
+        SettingGroup.RECOMMENDATIONS,
+        options=tuple(
+            SettingOption(value=years, label=label)
+            for years, label in ((0, "Any time"), (5, "Last 5 years"), (3, "Last 3 years"), (1, "Last year"))
+        ),
+        effects=(*_PROVIDER_EFFECTS, FUTURE_ROW),
+    ),
+    _setting(
         "recommendations.max_seeds",
         "Recommendation seed count",
         "Maximum watched titles used to seed all candidate sources for a row.",
@@ -889,11 +918,20 @@ _SETTINGS: tuple[SettingDefinition, ...] = (
     ),
     _setting(
         "requests.sonarr.monitor",
-        "Sonarr monitoring mode",
-        "How much of a newly added series Sonarr monitors for acquisition.",
+        "How much of a show to grab",
+        "Which seasons of a newly requested show are asked for: first or last seasons, every season, "
+        "and (direct Sonarr requests only) the pilot episode or unmonitored.",
         SettingGroup.REQUESTS,
         options=_options(tuple(SONARR_MONITOR_MODES)),
-        prerequisites=(_prerequisite("requests.target", ("arr",), "Used by direct Sonarr requests."),),
+        effects=(LOCAL, FUTURE_REQUEST),
+        capabilities=(Capability.REQUESTS_SEND,),
+    ),
+    _setting(
+        "requests.season_count",
+        "Seasons to request",
+        "How many seasons first or last seasons take (1 to 99); ignored by the other choices.",
+        SettingGroup.REQUESTS,
+        range=NumericRange(minimum=1, maximum=99, unit="seasons"),
         effects=(LOCAL, FUTURE_REQUEST),
         capabilities=(Capability.REQUESTS_SEND,),
     ),

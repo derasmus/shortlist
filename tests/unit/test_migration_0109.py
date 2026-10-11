@@ -11,7 +11,7 @@ import pytest
 from alembic import command
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import text
+from sqlalchemy import delete, insert, text
 from sqlalchemy.orm import Session
 
 from shortlist.server.assistant.operation_models import AssistantChange, AssistantOperation
@@ -41,10 +41,12 @@ def _legacy(tmp_path):
 
 def _insert_row(engine, name):
     with Session(engine) as session:
-        row = Collection(slug=name, name=name, enabled=False)
-        session.add(row)
+        # A core insert: the ORM would also write columns a later migration adds, which this old schema lacks.
+        row_id = session.execute(
+            insert(Collection).values(slug=name, name=name, enabled=False).returning(Collection.id)
+        ).scalar_one()
         session.commit()
-        return row.id
+        return row_id
 
 
 @pytest.mark.parametrize(
@@ -147,10 +149,14 @@ def test_0109_preserves_existing_rows_indexes_and_foreign_keys_and_prevents_reus
     with disposing_engine(_legacy(tmp_path)) as engine:
         if not empty:
             with Session(engine) as session:
-                row = Collection(id=42, slug="preserved", name="Preserved", enabled=False, poster={"mode": "text"})
+                session.execute(
+                    insert(Collection).values(
+                        id=42, slug="preserved", name="Preserved", enabled=False, poster={"mode": "text"}
+                    )
+                )
                 user = User(id=12, plex_account_id=112, username="Person", slug="person")
                 theme = Theme(id=7, slug="saved-theme", name="Saved theme")
-                session.add_all([row, user, theme])
+                session.add_all([user, theme])
                 session.flush()
                 session.add_all(
                     [
@@ -207,7 +213,7 @@ def test_0109_preserves_existing_rows_indexes_and_foreign_keys_and_prevents_reus
             assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         first = _insert_row(engine, "temporary")
         with Session(engine) as session:
-            session.delete(session.get(Collection, first))
+            session.execute(delete(Collection).where(Collection.id == first))
             session.commit()
         assert _insert_row(engine, "replacement") > first
 
@@ -236,10 +242,9 @@ def test_0109_preserves_a_preexisting_sequence_after_compatibility_downgrade(tmp
     with disposing_engine(_legacy(tmp_path)) as engine:
         command.upgrade(_alembic(tmp_path), "head")
         with Session(engine) as session:
-            row = Collection(id=2000, slug="retired-high-id", name="Retired")
-            session.add(row)
+            session.execute(insert(Collection).values(id=2000, slug="retired-high-id", name="Retired"))
             session.commit()
-            session.delete(row)
+            session.execute(delete(Collection).where(Collection.id == 2000))
             session.commit()
         command.downgrade(_alembic(tmp_path), "0108")
 
@@ -285,3 +290,87 @@ def test_0109_refuses_foreign_keys_enabled_before_touching_schema(tmp_path, monk
                 connection.exec_driver_sql("SELECT sql FROM sqlite_master WHERE name='collections'").scalar() == before
             )
             assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0108"
+
+
+@pytest.mark.parametrize(
+    ("table", "column"), [("events", "message"), ("jobs", "payload"), ("jobs", "result"), ("runs", "stats")]
+)
+def test_0109_skips_unreadable_history_json_and_still_reserves_every_readable_reference(tmp_path, table, column):
+    with disposing_engine(_legacy(tmp_path)) as engine:
+        retired_id = 809
+        with Session(engine) as session:
+            session.add(Job(kind="assistant.converge", status="done", payload={"row_ids": [retired_id]}))
+            session.add(
+                {
+                    "events": Event(scope="run", message={}),
+                    "jobs": Job(kind="x", status="done"),
+                    "runs": Run(trigger="manual", status="ok", stats={}),
+                }[table]
+            )
+            session.commit()
+        with closing(sqlite3.connect(tmp_path / "shortlist.db")) as db:
+            db.execute(f"UPDATE {table} SET {column} = 'not json {{' WHERE id = (SELECT max(id) FROM {table})")
+            db.commit()
+
+        command.upgrade(_alembic(tmp_path), "0109")
+
+        assert _insert_row(engine, "new-unrelated-row") > retired_id
+
+
+def _assistant_record(table: str):
+    now = datetime.now(UTC)
+    if table == "assistant_grants":
+        return AssistantGrant(
+            id="g", owner_account_id=42, client_id="c", name="n", preset="manage_selected_rows", constraints={}
+        )
+    if table == "assistant_changes":
+        return AssistantChange(
+            id="c",
+            grant_id="g",
+            owner_account_id=42,
+            client_id="c",
+            grant_revision=1,
+            kind="row",
+            dependencies={},
+            content_hash="h",
+            expires_at=now + timedelta(hours=1),
+            intent={},
+            requirements={},
+            summary={},
+            effects=[],
+        )
+    return AssistantOperation(
+        id="o",
+        grant_id="g",
+        owner_account_id=42,
+        client_id="c",
+        change_id="c",
+        idempotency_key="k",
+        request_hash="h",
+        authorization_basis="standing_grant",
+        result={},
+    )
+
+
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        ("assistant_grants", "constraints"),
+        ("assistant_changes", "intent"),
+        ("assistant_changes", "requirements"),
+        ("assistant_changes", "summary"),
+        ("assistant_changes", "effects"),
+        ("assistant_operations", "result"),
+    ],
+)
+def test_0109_still_refuses_an_unreadable_assistant_record(tmp_path, table, column):
+    with disposing_engine(_legacy(tmp_path)) as engine:
+        with Session(engine) as session:
+            session.add(_assistant_record(table))
+            session.commit()
+        with closing(sqlite3.connect(tmp_path / "shortlist.db")) as db:
+            db.execute(f"UPDATE {table} SET {column} = 'not json {{'")
+            db.commit()
+
+        with pytest.raises(RuntimeError, match=f"{table}.{column}"):
+            command.upgrade(_alembic(tmp_path), "0109")

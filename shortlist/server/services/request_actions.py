@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 from sqlalchemy import and_, or_, select
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from shortlist.engine.models import MediaType, MissingTitle, RequestConfig
 from shortlist.engine.request_config import resolve_request_config
+from shortlist.engine.requests import STANDING_REFUSALS, Refusal
 from shortlist.server.db.models import Collection, Event, RequestCandidate, User
 
 MAX_ASSISTANT_REQUESTS = 25
@@ -25,6 +26,7 @@ __all__ = [
     "finish_request_dispatch",
     "missing_title",
     "normalize_candidate_ids",
+    "recently_refused_requests",
     "recover_abandoned_request_dispatches",
     "request_candidates_in_session",
     "reserve_request_dispatches",
@@ -88,6 +90,7 @@ def target_snapshot(cfg: RequestConfig, media_type: str) -> dict:
             "destination": service_destination(target.url) if target else "",
             "configured": target is not None,
             "request_as_user_id": target.request_as_user_id if target else 0,
+            **_show_scope(cfg, media_type),
         }
     target = cfg.radarr if media_type == "movie" else cfg.sonarr
     return {
@@ -98,7 +101,16 @@ def target_snapshot(cfg: RequestConfig, media_type: str) -> dict:
         "root_folder": target.root_folder if target else None,
         "tag": target.tag if target else "",
         "monitor": cfg.sonarr_monitor if media_type == "show" else None,
+        **_show_scope(cfg, media_type),
     }
+
+
+def _show_scope(cfg: RequestConfig, media_type: str) -> dict:
+    """How much of a show is sent, for shows only. A film's snapshot keeps its old shape, so a film
+    send approved before these keys existed still matches at dispatch."""
+    if media_type != "show":
+        return {}
+    return {"monitor": cfg.sonarr_monitor, "season_count": cfg.season_count}
 
 
 def service_destination(url: str) -> str:
@@ -307,7 +319,7 @@ def finish_request_dispatch(session: Session, dispatch_id: int, outcome) -> None
         else "outcome_unknown"
     )
     claim.finished_at = datetime.now(UTC)
-    claim.result = {"status": claim.status, "detail": outcome.detail}
+    claim.result = {"status": claim.status, "outcome": outcome.status, "detail": outcome.detail}
     finish_candidate_in_session(session, claim.candidate_id, outcome)
 
 
@@ -413,6 +425,39 @@ def durable_handled_requests(session: Session) -> set[tuple[int, str]]:
         )
     )
     return {(body["title"]["tmdb_id"], body["title"]["media_type"]) for body in bodies}
+
+
+REFUSAL_HOLD = timedelta(days=7)
+
+
+def recently_refused_requests(session: Session) -> dict[tuple[int, str], Refusal]:
+    """Titles whose latest send in the last week was refused in a way that will repeat, with the reason.
+
+    A refused claim releases the title, which is right for a blip; but a refusal that will say the same
+    tomorrow (Sonarr/Radarr "could not find this title", a mode Overseerr cannot take, no seasons yet) won an
+    auto-send slot every night and starved every title below it (release review, 2026-10-12). These sit
+    out auto-send until a week has passed, and stay in the inbox for the owner to send by hand.
+    """
+    from shortlist.server.assistant.operation_models import AssistantRequestDispatch
+    from shortlist.server.services.delivery_snapshots import utc
+
+    cutoff = datetime.now(UTC) - REFUSAL_HOLD
+    claims = session.scalars(
+        select(AssistantRequestDispatch)
+        # A day of slack in SQL covers a stored time with no zone; `utc()` below makes the exact cut.
+        .where(AssistantRequestDispatch.finished_at >= cutoff - timedelta(days=1))
+        .order_by(AssistantRequestDispatch.finished_at)
+    )
+    latest: dict[tuple[int, str], AssistantRequestDispatch] = {}
+    for claim in claims:
+        if utc(claim.finished_at) >= cutoff:
+            title = claim.request_body["title"]
+            latest[(title["tmdb_id"], title["media_type"])] = claim
+    return {
+        key: Refusal((claim.result or {}).get("detail") or "", claim.request_body.get("target") or {})
+        for key, claim in latest.items()
+        if claim.status == "refused" and (claim.result or {}).get("outcome") in STANDING_REFUSALS
+    }
 
 
 def missing_title(body: dict) -> MissingTitle:

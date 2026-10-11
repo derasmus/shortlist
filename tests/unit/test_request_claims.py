@@ -12,6 +12,7 @@ from shortlist.server.db.models import RequestCandidate
 from shortlist.server.services.request_actions import (
     AutomaticRequestGuard,
     durable_handled_requests,
+    recently_refused_requests,
     request_send_entry,
     reserve_request_dispatches,
 )
@@ -130,3 +131,125 @@ def test_startup_settles_only_orphaned_synchronous_work_and_is_idempotent(reques
             "automatic": "outcome_unknown",
             "assistant": "reserved",
         }
+
+
+class TestAFailureBeforeSendingNeverBlocksTheTitle:
+    """A claim records any outcome but `requested`/`skipped_*` as an uncertain send, and an uncertain
+    send is excluded from every later run until the owner releases it by hand. So a failure that
+    provably sent nothing must not report "error" — or one TMDB or Sonarr blip blocks the show for good,
+    while its detail promises it "may work next run"."""
+
+    SHOW = MissingTitle(tmdb_id=202, media_type=MediaType.SHOW, title="Show", year=2020, rating=8, vote_count=900)
+
+    def _send(self, env, tmdb, sonarr=None, monkeypatch=None):
+        from shortlist.engine import requests as requests_mod
+
+        if sonarr is not None:
+            monkeypatch.setattr(requests_mod, "SonarrClient", lambda *a, **k: sonarr)
+        cfg = RequestConfig(enabled=True, target="arr", sonarr=ArrTarget("http://sonarr.test", "key", 1, "/tv"))
+        [outcome] = requests_mod._send_claims(
+            [("movies", self.SHOW)],
+            {"movies": cfg},
+            tmdb,
+            dry_run=False,
+            min_write_interval=0,
+            acquisition_guard=AutomaticRequestGuard(env.state.sessions),
+        )
+        with env.state.sessions() as session:
+            claim = session.scalars(select(AssistantRequestDispatch)).one()
+            return outcome, claim.status, durable_handled_requests(session)
+
+    def test_an_unreachable_tmdb_during_the_tvdb_lookup(self, request_env):
+        from tests.unit.test_requests import FakeTmdb
+
+        outcome, claim_status, handled = self._send(request_env, FakeTmdb(raise_on=202))
+
+        assert outcome.status.startswith("skipped_"), outcome.status
+        assert "next run" in outcome.detail
+        assert claim_status == "refused"
+        assert handled == set()
+
+    def test_sonarr_failing_its_lookup_before_the_add(self, request_env, monkeypatch):
+        from shortlist.engine.clients.arr import ArrError, SonarrClient
+        from tests.unit.test_requests import FakeTmdb
+
+        class LookupDown(SonarrClient):
+            def __init__(self):
+                super().__init__(ArrTarget("http://sonarr.test", "key", 1, "/tv"))
+
+            def _get(self, path, **params):
+                raise ArrError("Sonarr unreachable (ConnectError)")
+
+            def _post(self, path, body):
+                pytest.fail("nothing may be posted after a failed lookup")
+
+        outcome, claim_status, handled = self._send(request_env, FakeTmdb({202: 81189}), LookupDown(), monkeypatch)
+
+        assert outcome.status.startswith("skipped_"), outcome.status
+        assert "unreachable" in outcome.detail
+        assert claim_status == "refused"
+        assert handled == set()
+
+    def test_a_failed_add_post_is_still_uncertain(self, request_env, monkeypatch):
+        """The other side of the line: once the add itself was attempted, Sonarr may have taken it, so
+        the claim stays uncertain and the title is not sent twice."""
+        from shortlist.engine.clients.arr import ArrError, SonarrClient
+        from tests.unit.test_requests import FakeTmdb
+
+        class AddTimesOut(SonarrClient):
+            def __init__(self):
+                super().__init__(ArrTarget("http://sonarr.test", "key", 1, "/tv"))
+
+            def _get(self, path, **params):
+                if path.startswith("/api/v3/series/lookup"):
+                    return [{"tvdbId": 81189, "title": "Show", "titleSlug": "show", "seasons": []}]
+                return []
+
+            def _post(self, path, body):
+                raise ArrError("Sonarr unreachable (ReadTimeout)")
+
+        outcome, claim_status, handled = self._send(request_env, FakeTmdb({202: 81189}), AddTimesOut(), monkeypatch)
+
+        assert outcome.status == "error"
+        assert claim_status == "outcome_unknown"
+        assert handled == {(202, "show")}
+
+
+class TestARefusalThatWillRepeatSitsOutAWhile:
+    """Release review 2026-10-12: a title refused with a standing reason won an auto-send slot every
+    night. The server hands such titles back so the next runs hold them in the inbox instead."""
+
+    def _refuse(self, env, status: str, detail: str, *, days_ago: float = 0):
+        from datetime import UTC, datetime, timedelta
+
+        with AutomaticRequestGuard(env.state.sessions)("movies", automatic_title(), config()) as record:
+            record(SimpleNamespace(status=status, detail=detail, arr_slug=None))
+        with env.state.sessions() as session:
+            claim = session.scalars(select(AssistantRequestDispatch)).all()[-1]
+            claim.finished_at = datetime.now(UTC) - timedelta(days=days_ago)
+            session.commit()
+
+    def _refused(self, env):
+        with env.state.sessions() as session:
+            return recently_refused_requests(session)
+
+    def test_a_standing_refusal_is_handed_back_with_its_reason(self, request_env):
+        self._refuse(request_env, "skipped_not_found", "Radarr could not find this title")
+        [(key, refusal)] = self._refused(request_env).items()
+        assert key == (101, "movie")
+        assert refusal.detail == "Radarr could not find this title"
+        assert refusal.target["service"] == "radarr"
+
+    def test_a_blip_is_retried_next_run(self, request_env):
+        self._refuse(request_env, "skipped_not_sent", "Radarr unreachable (ConnectError)")
+        assert self._refused(request_env) == {}
+
+    def test_a_week_on_it_is_tried_again(self, request_env):
+        self._refuse(request_env, "skipped_not_found", "Radarr could not find this title", days_ago=8)
+        assert self._refused(request_env) == {}
+
+    def test_a_later_send_that_succeeded_clears_it(self, request_env):
+        self._refuse(request_env, "skipped_not_found", "Radarr could not find this title", days_ago=2)
+        with AutomaticRequestGuard(request_env.state.sessions)("movies", automatic_title(), config()) as record:
+            record(SimpleNamespace(status="requested", detail="accepted", arr_slug=None))
+        assert self._refused(request_env) == {}

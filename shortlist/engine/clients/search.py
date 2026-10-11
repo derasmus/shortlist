@@ -364,6 +364,10 @@ def _parse_extracted_titles(payload: dict) -> list[TitleCandidate]:
     return out
 
 
+class SearchUnavailable(RuntimeError):
+    """Every engine behind a search failed, so its empty page says nothing about the query."""
+
+
 class SearxngClient:
     """SearXNG metasearch (https://docs.searxng.org), self-hosted by the owner.
 
@@ -441,6 +445,14 @@ class SearxngClient:
             RuntimeError: The instance refused the JSON format, or answered with something that isn't
                 a SearXNG JSON page. Never carries the URL — it can embed reverse-proxy credentials.
         """
+        return self.search_status(query, num_results=num_results)[0]
+
+    def search_status(self, query: str, *, num_results: int = _DEFAULT_RESULTS) -> tuple[list[SearchResult], list[str]]:
+        """`search`, plus the engines SearXNG reported as failing for this query.
+
+        An empty page with failing engines is an outage (rate limits, CAPTCHAs), not "the web had
+        nothing to say" — the caller must not remember it as an answer.
+        """
         payload = self._fetch(query)
         results: list[SearchResult] = []
         for item in payload.get("results", [])[: max(0, num_results)]:
@@ -456,7 +468,7 @@ class SearxngClient:
             logger.warning("searxng search · {!r} → no results; engines unresponsive: {}", query[:60], dead)
         else:
             logger.debug("searxng search · {!r} → {} results", query[:60], len(results))
-        return results
+        return results, dead
 
     def _fetch(self, query: str) -> dict:
         """One raw JSON search page, with the two misconfigurations translated into their fix."""

@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RowSeasonsField } from "@/components/rows/row-seasons-field";
 import type * as ApiModule from "@/lib/api";
 import { ApiError } from "@/lib/api";
+import { useCollections } from "@/lib/queries";
 import type { SeasonRow } from "@/lib/season-verdict";
 import { seasonDate } from "@/lib/seasons";
 
@@ -34,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   updateSeason: vi.fn(),
   deleteSeason: vi.fn(),
   getSeasonNextDate: vi.fn(),
+  listCollections: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -50,6 +52,8 @@ function renderField(
     name = "{season_emoji} {season} picks",
     status = null as never,
     row = { size: 15, perPerson: true, media: "movie", libraryKeys: [] } as SeasonRow,
+    // The row editor's page holds the rows list open, so a season save refetches it too.
+    withRowsList = false,
   } = {},
 ) {
   const onChange = vi.fn();
@@ -66,10 +70,16 @@ function renderField(
           row={row}
           savedRow={null}
         />
+        {withRowsList && <RowsList />}
       </QueryClientProvider>
     </MemoryRouter>,
   );
   return onChange;
+}
+
+function RowsList() {
+  useCollections();
+  return null;
 }
 
 const ON: Value = { seasons: ["halloween", "christmas"], season_lead_days: 30, season_after_days: 0 };
@@ -403,6 +413,58 @@ describe("RowSeasonsField", () => {
     await waitFor(() => expect(within(presets).queryByText("Thanksgiving (US)")).toBeNull());
     expect(within(presets).getByText("Father's Day (AU, NZ)")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("checkbox", { name: /Thanksgiving/ })).toHaveFocus());
+  });
+
+  it("finishes adding without waiting for the rows list, which a running run can hold up for seconds", async () => {
+    mocks.getSeasons.mockResolvedValue([VALENTINES, HALLOWEEN, CHRISTMAS]);
+    mocks.listCollections.mockResolvedValueOnce([]);
+    mocks.createSeason.mockImplementation(() => {
+      mocks.getSeasons.mockResolvedValue(CATALOGUE);
+      mocks.listCollections.mockReturnValue(new Promise(() => {}));
+      return Promise.resolve(THANKSGIVING);
+    });
+    const onChange = renderField(ON, { withRowsList: true });
+    await waitFor(() => expect(mocks.listCollections).toHaveBeenCalledTimes(1));
+    await userEvent.click(await screen.findByRole("button", { name: "Add Thanksgiving (US)" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith({ seasons: ["halloween", "thanksgiving", "christmas"] }));
+    expect(mocks.listCollections).toHaveBeenCalledTimes(2);
+  });
+
+  it("puts focus on the added season's checkbox without scrolling the page away from the presets", async () => {
+    mocks.getSeasons.mockResolvedValue([VALENTINES, HALLOWEEN, CHRISTMAS]);
+    mocks.createSeason.mockImplementation(() => {
+      mocks.getSeasons.mockResolvedValue(CATALOGUE);
+      return Promise.resolve(THANKSGIVING);
+    });
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    renderField(ON);
+    await userEvent.click(await screen.findByRole("button", { name: "Add Thanksgiving (US)" }));
+    const box = await screen.findByRole("checkbox", { name: /Thanksgiving/ });
+    await waitFor(() => expect(box).toHaveFocus());
+    const onBox = focus.mock.contexts.flatMap((element, i) => (element === box ? [focus.mock.calls[i]] : []));
+    expect(onBox).toEqual([[{ preventScroll: true }]]);
+    focus.mockRestore();
+  });
+
+  it("unticks a deleted season only once the rows list has caught up, so the row never looks edited", async () => {
+    mocks.deleteSeason.mockResolvedValue(undefined);
+    mocks.listCollections.mockResolvedValueOnce([]);
+    let rowsCaughtUp: (rows: never[]) => void = () => {};
+    mocks.deleteSeason.mockImplementation(() => {
+      mocks.listCollections.mockReturnValue(new Promise((resolve) => (rowsCaughtUp = resolve)));
+      return Promise.resolve(undefined);
+    });
+    const onChange = renderField({ ...ON, seasons: ["thanksgiving", "christmas"] }, { withRowsList: true });
+    await waitFor(() => expect(mocks.listCollections).toHaveBeenCalledTimes(1));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Thanksgiving" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete season" }));
+    const confirm = await screen.findByRole("dialog", { name: "Delete “Thanksgiving”?" });
+    await userEvent.click(within(confirm).getByRole("button", { name: "Delete season" }));
+
+    await waitFor(() => expect(mocks.listCollections).toHaveBeenCalledTimes(2));
+    expect(onChange).not.toHaveBeenCalledWith({ seasons: ["christmas"] });
+    rowsCaughtUp([]);
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith({ seasons: ["christmas"] }));
   });
 
   it("gives the server's reason when a count fails, and Settings rather than Retry for a missing TMDB key", async () => {

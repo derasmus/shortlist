@@ -316,6 +316,45 @@ describe("TraceView", () => {
     expect(within(searched).getByText(/Step 2/)).toBeTruthy();
   });
 
+  it("tags favourite and older searches with their kind, and says how the picks were split", () => {
+    const data = okTrace();
+    const gather = data.trace.gathers?.[0];
+    if (!gather) throw new Error("fixture must have a gather");
+    gather.sources = [
+      ...(gather.sources ?? []),
+      { source: "llm_web", status: "ok", contributed: 3, detail: "" },
+    ];
+    gather.web = {
+      mode: "exa",
+      searches: [
+        { seed: "Toy Story", query: "movies like Toy Story", cached: false, returned: [], kind: "recent" },
+        { seed: "Heat", query: "movies like Heat", cached: false, returned: [], kind: "favourite" },
+        { seed: "Alien", query: "movies like Alien", cached: true, returned: [], kind: "older" },
+      ],
+      shares: { recent: 2, favourite: 1, older: 1 },
+    };
+    render(<TraceView data={data} />);
+    const searched = screen.getByText(/Where we searched/).closest("section") as HTMLElement;
+    expect(within(searched).getByText("favourite")).toBeTruthy();
+    expect(within(searched).getByText("older")).toBeTruthy();
+    expect(within(searched).queryByText("recent")).toBeNull();
+    expect(within(searched).getByText("Picks asked for: 2 recent, 1 favourites, 1 older")).toBeTruthy();
+  });
+
+  it("shows no kind chip or shares line on a trace recorded before the history mix", () => {
+    const data = okTrace();
+    const gather = data.trace.gathers?.[0];
+    if (!gather) throw new Error("fixture must have a gather");
+    gather.sources = [...(gather.sources ?? []), { source: "llm_web", status: "ok", contributed: 1, detail: "" }];
+    gather.web = {
+      mode: "exa",
+      searches: [{ seed: "Toy Story", query: "movies like Toy Story", cached: false, returned: [] }],
+    };
+    render(<TraceView data={data} />);
+    expect(screen.queryByText(/Picks asked for/)).toBeNull();
+    expect(screen.queryByText("favourite")).toBeNull();
+  });
+
   it("names the titles whose web search failed, so a thin web result is not mistaken for a quiet one", () => {
     const data = okTrace();
     const gather = data.trace.gathers?.[0];
@@ -337,6 +376,23 @@ describe("TraceView", () => {
       within(searched).getByText(/2 searches failed and were skipped/),
     ).toBeTruthy();
     expect(within(searched).getByText(/Dune, Arrival/)).toBeTruthy();
+  });
+
+  it("shows why a local model's reply was unusable", () => {
+    const data = okTrace();
+    const gather = data.trace.gathers?.[0];
+    if (!gather) throw new Error("fixture must have a gather");
+    gather.sources = [
+      ...(gather.sources ?? []),
+      { source: "llm_web", status: "ok", contributed: 0, detail: "" },
+    ];
+    gather.web = {
+      mode: "exa",
+      searches: [],
+      hint: "the local model answered in prose — set OLLAMA_CONTEXT_LENGTH=16384 on the Ollama server",
+    };
+    render(<TraceView data={data} />);
+    expect(screen.getByText(/OLLAMA_CONTEXT_LENGTH=16384/)).toBeTruthy();
   });
 
   it("explains how the shortlist was ordered, grounded in this library's picks — and says no AI ranks", () => {

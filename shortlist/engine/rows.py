@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from functools import cached_property
+from statistics import median
 
 from loguru import logger
 
@@ -62,6 +63,7 @@ from shortlist.engine.models import (
 from shortlist.engine.over_time import apply_exclusions, excluded_titles
 from shortlist.engine.placeholders import fill_season, fill_theme, names_a_seed
 from shortlist.engine.requests_row import build_requests_picks
+from shortlist.engine.taste import HistoryMix, TastePrompt, history_mix, recent_taste
 from shortlist.engine.themes import theme_content_hash
 from shortlist.engine.web_guidance import BUILTIN, Guidance, resolve_guidance
 
@@ -94,6 +96,21 @@ def effective_max_seeds(spec: RowSpec, cfg: EngineConfig) -> int:
     "identical" fallbacks drift apart. (A shared row has no seed budget: it is built from watch counts.)
     """
     return spec.max_seeds if spec.max_seeds is not None else cfg.max_seeds
+
+
+def wide_taste_applies(
+    spec: RowSpec, *, favourite_count: int, older_count: int, default_sources: list[str], default_max_seeds: int
+) -> bool:
+    """Whether a per-person row's AI web search is told the person's whole viewing profile (#152).
+
+    Pure, so a run (`RowPolicy.uses_wide_taste`) and the history-mix endpoint decide it identically.
+    """
+    max_seeds = spec.max_seeds if spec.max_seeds is not None else default_max_seeds
+    return (
+        (favourite_count > 0 or older_count > 0)
+        and "llm_web" in effective_row_sources(spec, default_sources)
+        and max_seeds != 1
+    )
 
 
 def effective_cold_start(spec: RowSpec, cfg: EngineConfig) -> str:
@@ -233,6 +250,16 @@ def effective_recent_count(spec: RowSpec, cfg: EngineConfig) -> int:
     is layered on top of it by ``RowPolicy.effective_recent_count``.
     """
     return spec.recent_count if spec.recent_count is not None else cfg.recent_count
+
+
+def effective_favourite_count(spec: RowSpec, cfg: EngineConfig) -> int:
+    """How many long-time favourites the web-search source searches for this row: its own, else the run's."""
+    return spec.favourite_count if spec.favourite_count is not None else cfg.favourite_count
+
+
+def effective_older_count(spec: RowSpec, cfg: EngineConfig) -> int:
+    """How many older watches the web-search source searches for this row: its own, else the run's."""
+    return spec.older_count if spec.older_count is not None else cfg.older_count
 
 
 def _sections_of(ctx: EngineContext, library_keys: list) -> dict[int, str]:
@@ -837,9 +864,9 @@ def _seed_moved(
             # "no seed" against a seeded pool. Kept, most of it would be carried forward under a new
             # "Because you watched X" title. A pool that still follows no watch (nor a library with no watch
             # of its own) is not a move, so neither rebuilds every night; once rebuilt, the row is stamped.
-            return lead_tmdb_id is not None and any(c.top_seed for c in sub)
+            return lead_tmdb_id is not None and any(c.naming_seed for c in sub)
         return was != lead_tmdb_id
-    current = next((c.top_seed for c in sub if c.top_seed), None)
+    current = next((c.naming_seed for c in sub if c.naming_seed), None)
     return named.seed_tmdb_id != (current.tmdb_id if current else None)
 
 
@@ -1122,7 +1149,7 @@ def _reseed_survivors(kept: list[Pick], sub: list[Candidate], seeds: list[Seed])
     carry. `reason` is left alone: it says how the pick was found, which is still true.
     """
     live = {(s.tmdb_id, s.media_type) for s in seeds}
-    tonight = {(c.tmdb_id, c.media_type): c.top_seed for c in sub}
+    tonight = {(c.tmdb_id, c.media_type): c.naming_seed for c in sub}
     out: list[Pick] = []
     for p in kept:
         if p.seed_tmdb_id is None or (p.seed_tmdb_id, p.media_type) in live:
@@ -1347,6 +1374,11 @@ def _gather_pool(
     season: seasons_mod.SeasonTitles | None = None,
     season_source: str = "season",
     guidance: Guidance | None = None,
+    taste: TastePrompt | None = None,
+    favourite_seeds: list[Seed] | None = None,
+    favourite_count: int = 0,
+    older_seeds: list[Seed] | None = None,
+    older_count: int = 0,
 ) -> _Gathered:
     """The first half of the candidate pool: gather, then keep what the libraries hold and this person may see."""
     # The titles this person has already watched (per the row's policy), not just the ~30 seeds — a
@@ -1379,6 +1411,13 @@ def _gather_pool(
         ),
         season_source=season_source,
         web_guidance=guidance,
+        taste=taste,
+        favourite_seeds=favourite_seeds,
+        favourite_count=favourite_count,
+        older_seeds=older_seeds,
+        older_count=older_count,
+        credit_web_titles=ctx.config.credit_web_titles,
+        web_credit_mode=ctx.config.web_credit_mode,
     )
     # `dropped` collects (candidate, reason) as filter_candidates works — observation only, it does
     # not change which candidates are kept.
@@ -2200,6 +2239,8 @@ class RowPolicy:
     recency_cuts: dict[tuple, list[Candidate]] = field(default_factory=dict)
     pool_failures: dict[tuple, str] = field(default_factory=dict)  # pool key -> why every source for it failed
     seed_cache: dict[tuple, list] = field(default_factory=dict)
+    # (wide, media, libraries, favourites, older) -> the taste text and the titles to search, for `taste_for`.
+    taste_cache: dict[tuple, HistoryMix] = field(default_factory=dict)
     # Set by the first failed TMDB genre lookup for a rewatch row; every later title is then kept out
     # without asking (`_in_excluded_genre`).
     genres_unreadable: bool = False
@@ -2475,6 +2516,20 @@ class RowPolicy:
             return override.recent_count
         return effective_recent_count(spec, self.cfg)
 
+    def effective_favourite_count(self, spec: RowSpec) -> int:
+        """Long-time favourites this row searches: this person's override, then the row's, then the run's."""
+        override = self.user.row_overrides.get(spec.slug)
+        if override and override.favourite_count is not None:
+            return override.favourite_count
+        return effective_favourite_count(spec, self.cfg)
+
+    def effective_older_count(self, spec: RowSpec) -> int:
+        """Older watches this row searches: this person's override, then the row's, then the run's."""
+        override = self.user.row_overrides.get(spec.slug)
+        if override and override.older_count is not None:
+            return override.older_count
+        return effective_older_count(spec, self.cfg)
+
     def season_titles(self, spec: RowSpec) -> seasons_mod.SeasonTitles | None:
         """This row's season as read tonight; None for a row that is not seasonal, or whose list
         could not be read (``ctx.season_failures`` says why). An AI row's theme is read the same way, so it
@@ -2532,6 +2587,64 @@ class RowPolicy:
                 disliked=self.disliked,
             )
         return self.seed_cache[key]
+
+    def uses_wide_taste(self, spec: RowSpec) -> bool:
+        """Whether this row's AI web search is told the person's whole viewing profile (#152).
+
+        When it searches favourites or older watches. Not for a row seeded from a single title ("because you
+        watched X"): it is about that one title, and a profile would drown it.
+        """
+        return wide_taste_applies(
+            spec,
+            favourite_count=self.effective_favourite_count(spec),
+            older_count=self.effective_older_count(spec),
+            default_sources=self.cfg.candidate_sources,
+            default_max_seeds=self.cfg.max_seeds,
+        )
+
+    def taste_for(self, spec: RowSpec) -> HistoryMix:
+        """What this row's AI web search is told of the person's history, and the titles to look up beyond the recent.
+
+        A wide profile when `uses_wide_taste`; otherwise, for any other row with AI web search, the recent
+        titles from this row's libraries minus their "Don't seed" and disliked ones, so the pick prompt
+        matches the row's seeds. No prompt and no seeds for a row without AI web search.
+
+        Built from the watches this row's libraries hold (as its seeds are), over the person's whole-history
+        ratings verdict. Memoised per (mode, media, libraries, counts), the only things it depends on. The
+        older sample rotates by the week, so one run's rows agree and next week's differ.
+        """
+        wide = self.uses_wide_taste(spec)
+        if not wide and "llm_web" not in self.effective_sources(spec):
+            return HistoryMix(None, [], [])
+        favourites = self.effective_favourite_count(spec) if wide else 0
+        older = self.effective_older_count(spec) if wide else 0
+        # The recent group is the row's seeds, which a cycling row picks for itself, so they key the memo too.
+        searched = (
+            frozenset((s.tmdb_id, s.media_type) for s in self.seeds_for(spec)[: self.effective_recent_count(spec)])
+            if wide
+            else frozenset()
+        )
+        key = (wide, spec.media, tuple(sorted(str(k) for k in spec.library_keys)), favourites, older, searched)
+        if key not in self.taste_cache:
+            history = _history_for_row(self.ctx, self.user.history, spec)
+            if wide:
+                recent_weights = [s.weight for s in self.seeds_for(spec)[: self.effective_recent_count(spec)]]
+                self.taste_cache[key] = history_mix(
+                    history,
+                    blocked=self.user.blocked_seeds,
+                    ratings=self.ratings,
+                    resolve=self.resolve,
+                    favourites=favourites,
+                    older=older,
+                    now=_utc(self.ctx.run_at) or datetime.now(UTC),
+                    lookback_years=self.cfg.older_lookback_years,
+                    searched=searched,
+                    seed_weight=median(recent_weights) if recent_weights else 1.0,
+                )
+            else:
+                prompt = recent_taste(history, blocked=self.user.blocked_seeds, ratings=self.ratings)
+                self.taste_cache[key] = HistoryMix(prompt, [], [])
+        return self.taste_cache[key]
 
     def gathered_specs(self) -> list[RowSpec]:
         """The rows built from a candidate pool — every row of theirs except a requests row, which is
@@ -2591,6 +2704,13 @@ class RowPolicy:
             # An AI row's pool is its theme's titles, so two themes — or one theme's contents before and after
             # an edit — never share a gather (#138). Nothing is added for any other row, so no key changes.
             *((spec.theme.slug, theme_content_hash(spec.theme)) if spec.theme is not None else ()),
+            # A wide taste profile (and the favourites searched) changes what the AI is shown (#152). Added
+            # only for a row that gets one, so every other row's key is what it always was.
+            *(
+                ("wide_taste", self.effective_favourite_count(spec), self.effective_older_count(spec))
+                if self.uses_wide_taste(spec)
+                else ()
+            ),
         )
 
     def pool_slot(self, spec: RowSpec) -> tuple:
@@ -2616,6 +2736,8 @@ class RowPolicy:
             gather_started = time.monotonic()
             guidance = self.effective_guidance(spec)
             limits = spec.limits()
+            mix = self.taste_for(spec)
+            taste = mix.taste
             gathering = gather_key not in self.gathers
             try:
                 if gathering:
@@ -2642,6 +2764,11 @@ class RowPolicy:
                         season=season,
                         season_source="theme" if spec.theme is not None else "season",
                         guidance=guidance,
+                        taste=taste,
+                        favourite_seeds=mix.favourite_seeds,
+                        favourite_count=self.effective_favourite_count(spec) if taste is not None and taste.wide else 0,
+                        older_seeds=mix.older_seeds,
+                        older_count=self.effective_older_count(spec) if taste is not None and taste.wide else 0,
                     )
             except Exception as e:
                 self.pool_failures[gather_key] = f"{type(e).__name__}: {e}"

@@ -18,6 +18,7 @@ from loguru import logger
 
 from shortlist.engine.history import distinct_recent
 from shortlist.engine.models import UserProfile
+from shortlist.engine.taste import TastePrompt, recent_list_text
 from shortlist.engine.web_guidance import BUILTIN, Guidance, render_owner_text
 
 
@@ -75,9 +76,7 @@ def taste_summary(profile: UserProfile, max_titles: int = 20) -> str:
     Distinct titles: a show's episodes collapse to the one show, so a binge of 20 episodes counts
     once and the model sees ``max_titles`` real, varied titles rather than the same show repeated.
     """
-    recent = distinct_recent(profile.history, max_titles)
-    lines = [f"- {w.title}" + (f" ({w.year})" if w.year else "") for w in recent]
-    return "Recently watched (most recent first):\n" + "\n".join(lines)
+    return recent_list_text(distinct_recent(profile.history, max_titles))
 
 
 class _WebPrompt(NamedTuple):
@@ -91,6 +90,15 @@ class _WebPrompt(NamedTuple):
     guide: str
     tail: str
     count: str
+
+    @property
+    def guide_wide(self) -> str:
+        """``guide`` for a prompt whose user message carries the whole viewing history (#152), not just
+        what they watched lately."""
+        for recent in ("what this person recently watched", "what this person recently enjoyed"):
+            if recent in self.guide:
+                return self.guide.replace(recent, "this person's viewing history")
+        return self.guide
 
 
 # Note what this prompt does NOT ask for: tmdb_id or imdb_id. Measured 2026-09-02 against the live
@@ -143,8 +151,22 @@ _WEB_SYSTEM = _WEB.head + _WEB.guide + _WEB.tail
 _OWNER_ADDS = "The server owner adds, for this row: "
 
 
-def _web_system(prompt: _WebPrompt, *, k: int, year: int, guidance: Guidance | None) -> str:
+# Asks which watched title a proposal follows from, so the pipeline can credit that watch (#152). Only the prompts
+# where the model chooses from the whole web carry it; the pick prompt already knows which search found each title.
+_BECAUSE = (
+    ' For each title, add "because": the watched title listed above that it most follows from, exactly as '
+    "listed. Leave it out only when no listed title relates to it."
+)
+
+
+def _web_system(
+    prompt: _WebPrompt, *, k: int, year: int, guidance: Guidance | None, wide: bool = False, because: bool = False
+) -> str:
     """One web system prompt. Built-in guidance gives exactly the text this source has always sent.
+
+    ``wide`` says the user message carries a full taste profile (#152), so the built-in guidance speaks of
+    the person's viewing history rather than their recent watches. ``because`` asks for the optional field
+    naming the watched title behind each proposal.
 
     Owner text is spliced in AFTER ``str.format`` runs on Shortlist's own parts, so its braces are inert.
     """
@@ -153,10 +175,10 @@ def _web_system(prompt: _WebPrompt, *, k: int, year: int, guidance: Guidance | N
     if g.replace:
         middle = render_owner_text(g.replace, k=k, year=year) + " " + prompt.count.format(**fmt)
     else:
-        middle = prompt.guide.format(**fmt)
+        middle = (prompt.guide_wide if wide else prompt.guide).format(**fmt)
     if g.extra:
         middle += _OWNER_ADDS + render_owner_text(g.extra, k=k, year=year) + " "
-    return prompt.head.format(**fmt) + middle + prompt.tail.format(**fmt)
+    return prompt.head.format(**fmt) + middle + prompt.tail.format(**fmt) + (_BECAUSE if because else "")
 
 
 def web_system_prompt(backend: str, *, k: int, year: int, guidance: Guidance | None) -> str:
@@ -184,7 +206,13 @@ def builtin_template(backend: str) -> str:
 
 
 def build_web_prompt(
-    profile: UserProfile, seeds: list, k: int, *, year: int | None = None, guidance: Guidance | None = None
+    profile: UserProfile,
+    seeds: list,
+    k: int,
+    *,
+    year: int | None = None,
+    guidance: Guidance | None = None,
+    taste: TastePrompt | None = None,
 ) -> tuple[str, str]:
     """(system, user) prompts for a web-search recommendation call (the ``llm_web`` source).
 
@@ -199,6 +227,9 @@ def build_web_prompt(
         year: The current year, injected into the prompt because a model cannot be trusted to know
             it. Defaults to today's. Tests pin it so the prompt is deterministic.
         guidance: The owner's guidance (#138). None or ``BUILTIN`` sends the built-in prompt.
+        taste: The history text to send (#152). A wide one replaces the recent-watches list and makes the
+            built-in guidance speak of the viewing history; a recent-list one is ignored here, as the
+            seeds already are that list. None sends exactly the text sent before.
 
     Returns:
         ``(system, user)`` — the system prompt carrying the rules, and the user prompt carrying the
@@ -209,8 +240,11 @@ def build_web_prompt(
         liked = [w.title for w in sorted(profile.history, key=lambda w: w.watched_at, reverse=True)[:20]]
     body = "\n".join(f"- {t}" for t in liked) or "- (no history yet — recommend broadly popular titles)"
     now = year if year is not None else datetime.now(UTC).year
-    system = _web_system(_WEB, k=k, year=now, guidance=guidance)
-    user = f"They recently enjoyed:\n{body}\n\nSearch the web for what to watch next, then recommend up to {k} titles."
+    wide = taste is not None and taste.wide
+    system = _web_system(_WEB, k=k, year=now, guidance=guidance, wide=wide)
+    # A recent-list taste is ignored here: the seeds above are already scoped to the row.
+    watched = taste.text if wide else f"They recently enjoyed:\n{body}"
+    user = f"{watched}\n\nSearch the web for what to watch next, then recommend up to {k} titles."
     # The release window repeats the built-in guidance, so it goes when an owner's text replaces that guidance.
     if not (guidance and guidance.replace):
         user += f" Favour things released in {now - 1} or {now}."
@@ -264,24 +298,42 @@ def build_web_query_for_title(title: str) -> str:
 
 
 def build_web_rag_prompt(
-    profile: UserProfile, results: list, k: int, *, year: int | None = None, guidance: Guidance | None = None
+    profile: UserProfile,
+    results: list,
+    k: int,
+    *,
+    year: int | None = None,
+    guidance: Guidance | None = None,
+    taste: TastePrompt | None = None,
+    because: bool = False,
 ) -> tuple[str, str]:
     """(system, user) prompts for recommending titles from web-search RESULTS the app already fetched.
 
     Unlike ``build_web_prompt`` (which asks a native-search model to search for itself), this embeds
     the article snippets we retrieved so an offline/local model can recommend from them. The caller
-    resolves each returned title to TMDB and library-verifies it, so a bad title reaches no row.
+    resolves each returned title to TMDB and library-verifies it, so a bad title reaches no row. ``because``
+    also asks for each title's optional ``because`` (#152).
     """
     now = year if year is not None else datetime.now(UTC).year
-    system = _web_system(_WEB_RAG, k=k, year=now, guidance=guidance)
+    system = _web_system(
+        _WEB_RAG, k=k, year=now, guidance=guidance, wide=taste is not None and taste.wide, because=because
+    )
     blocks = [f"## {getattr(r, 'title', '')}\n{(getattr(r, 'text', '') or '')[:800]}" for r in results]
     context = "\n\n".join(blocks) or "(no web results found)"
-    user = f"{taste_summary(profile)}\n\nWeb articles:\n{context}\n\nRecommend up to {k} titles to watch next."
+    watched = taste.text if taste else taste_summary(profile)
+    user = f"{watched}\n\nWeb articles:\n{context}\n\nRecommend up to {k} titles to watch next."
     return system, user
 
 
 def build_web_pick_prompt(
-    profile: UserProfile, candidates: list, k: int, *, year: int | None = None, guidance: Guidance | None = None
+    profile: UserProfile,
+    candidates: list,
+    k: int,
+    *,
+    year: int | None = None,
+    guidance: Guidance | None = None,
+    taste: TastePrompt | None = None,
+    groups: list[tuple[str, list, int]] | None = None,
 ) -> tuple[str, str]:
     """(system, user) prompts for picking from titles the SEARCH PROVIDER already extracted.
 
@@ -294,18 +346,43 @@ def build_web_pick_prompt(
 
     The caller resolves each returned title to TMDB and library-verifies it, so a title the model
     invents rather than picks from the list reaches no row.
+
+    ``groups`` is the history mix (#152): ``(kind, titles, share)`` per kind of search that found them.
+    Each list gets its own heading, and the closing line says how many to take from each. It replaces
+    ``candidates``; without it the prompt is the single list it has always been.
     """
     now = year if year is not None else datetime.now(UTC).year
-    system = _web_system(_WEB_PICK, k=k, year=now, guidance=guidance)
+    system = _web_system(_WEB_PICK, k=k, year=now, guidance=guidance, wide=taste is not None and taste.wide)
+    watched = taste.text if taste else taste_summary(profile)
+    if groups:
+        blocks = [f"{_GROUP_HEADINGS[kind]}\n{_title_lines(found)}" for kind, found, _ in groups]
+        shares = ", ".join(f"{share} from the {_GROUP_LISTS[kind]} list" for kind, _, share in groups)
+        user = (
+            f"{watched}\n\n" + "\n\n".join(blocks) + f"\n\nPick up to {k}. Take roughly {shares}, "
+            "unless a list has fewer that suit them."
+        )
+        return system, user
+    context = _title_lines(candidates) or "(no titles found)"
+    user = f"{watched}\n\nTitles recommended by recent articles:\n{context}\n\nPick up to {k}."
+    return system, user
+
+
+_GROUP_HEADINGS = {
+    "recent": "Titles recommended for their recent watches:",
+    "favourite": "Titles recommended for their long-time favourites:",
+    "older": "Titles recommended for things they watched further back:",
+}
+_GROUP_LISTS = {"recent": "recent", "favourite": "favourites", "older": "further-back"}
+
+
+def _title_lines(candidates: list) -> str:
     lines = []
     for c in candidates:
         year = getattr(c, "year", None)
         lines.append(
             f"- {getattr(c, 'title', '')}" + (f" ({year})" if year else "") + f" [{getattr(c, 'media', 'movie')}]"
         )
-    context = "\n".join(lines) or "(no titles found)"
-    user = f"{taste_summary(profile)}\n\nTitles recommended by recent articles:\n{context}\n\nPick up to {k}."
-    return system, user
+    return "\n".join(lines)
 
 
 _FENCE = re.compile(r"```[a-zA-Z]*\s*(.*?)```", re.DOTALL)
@@ -464,7 +541,10 @@ def try_parse_web_titles(text: str, limit: int) -> list[dict] | None:
             continue
         media = "show" if str(item.get("media") or "").lower() in ("show", "tv", "series") else "movie"
         year = item.get("year")
-        out.append({"title": title, "year": int(year) if isinstance(year, int) else None, "media": media})
+        rec = {"title": title, "year": int(year) if isinstance(year, int) else None, "media": media}
+        if isinstance(item.get("because"), str):
+            rec["because"] = item["because"]
+        out.append(rec)
         if len(out) >= limit:
             break
     return out

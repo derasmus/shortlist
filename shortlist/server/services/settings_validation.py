@@ -92,6 +92,17 @@ def _bounded_int(low: int, high: int):
     return check
 
 
+def _whole_int(low: int, high: int):
+    """A JSON integer in range — not a float, string or bool that `int()` would quietly convert."""
+
+    def check(value: object) -> str | None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return f"must be a whole number between {low} and {high}"
+        return None if low <= value <= high else f"must be between {low} and {high}"
+
+    return check
+
+
 def _bounded_float(low: float, high: float):
     def check(value: object) -> str | None:
         try:
@@ -144,6 +155,15 @@ def _non_blank_row_template(value: object) -> str | None:
 def _one_of(*allowed: str):
     def check(value: object) -> str | None:
         return None if str(value) in allowed else f"must be one of {', '.join(allowed)}"
+
+    return check
+
+
+def _one_of_ints(*allowed: int):
+    def check(value: object) -> str | None:
+        if isinstance(value, bool) or not isinstance(value, int) or value not in allowed:
+            return f"must be one of {', '.join(str(a) for a in allowed)}"
+        return None
 
     return check
 
@@ -342,6 +362,9 @@ VALIDATORS = {
     "recommendations.idle_hold_days": _bounded_int(0, MAX_REFRESH_DAYS),
     "recommendations.recency": _bounded_float(0.0, 1.0),
     "recommendations.recent_count": _bounded_int(1, 25),
+    "recommendations.favourite_count": _bounded_int(0, 10),
+    "recommendations.older_count": _bounded_int(0, 10),
+    "recommendations.older_lookback_years": _one_of_ints(0, 1, 3, 5),
     "recommendations.max_seeds": _bounded_int(5, 100),
     "recommendations.rating_source": _one_of("tmdb", "imdb", "trakt", "tomatoes", "metacritic"),
     # Floor of 1, not 0: at 0 nobody is ever cold, which silently disables the whole cold-start path
@@ -378,6 +401,7 @@ VALIDATORS = {
     # Sonarr 400s the whole add on a value outside its enum, so the typo is refused here rather than
     # discovered a fortnight later as a request that never arrived.
     "requests.sonarr.monitor": _one_of(*SONARR_MONITOR_MODES),
+    "requests.season_count": _whole_int(1, 99),
     "row.name_template": _non_blank_row_template,
 }
 

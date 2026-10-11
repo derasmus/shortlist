@@ -15,18 +15,31 @@ reviewer who rediscovers a finding checks the history before fixing it again.
 
 **Engine tuning:**
 
-- The engine's scoring constants are reasoned, not measured. `scripts/replay_eval.py` (leave-one-out replay of a
-  person's history) exists and has never been run against real data. Every engine dial defaults off, so nothing
-  is at risk until one is turned up.
+- The engine's scoring constants are reasoned, not measured. First real `scripts/replay_eval.py` run (2026-10-11,
+  production, 46 people, 230 held-out watches, baseline vs `recency=0.8`): candidate recall 0.23, hit@row_size
+  0.02 → 0.03, MRR 0.014 → 0.016, better/worse/same 22/17/191 — 56% agreement, below the 70% the sample needs, so
+  noise. That run had only TMDB similar on and no AI, and half its 230 cases were not discoveries (99 shows
+  already started, 17 rewatches); the replay now keeps discoveries only and runs every configured source.
+- #152 AI-search credit, settled 2026-10-11 (replays of 46 held-out discoveries per setup, final code):
+  Exa + Claude and Exa + local model keep `scaled:0.7` (no hit loss, AI share ~2x). SearXNG + Claude keeps it
+  (0/0: 5/5/5 hits, share 3% -> 6%). Native search is NOT credited (f630ae88): every scale cost 2 of 6 hits.
+  Live, fresh rows: MooHouse 0 of 120 AI titles before, 35 of 240 after. Still open, low priority:
+  - With the opt-in history mix (6/6) credit costs about 1-2 hits on every setup (Exa+Claude 15 -> 13,
+    SearXNG+Claude 5 -> 4, Exa+llama 4 -> 1). The 3x-sample local check was stopped unfinished. If it
+    matters, try crediting history seeds at a lower scale than recent ones and replay.
+  - `replay.py` gathers with "full", so its headline `in_row` is "full"; read `by_mode["scaled:0.7"]`.
 
 **Test and structure leftovers:**
 
-- `test_pipeline_row_overrides.py` is ~2,500 lines because `TestPerRowOverrides` alone is ~1,980; a pure move
-  cannot split a class.
 - A full run reports two unclosed loopback sockets from `test_assistant_mcp_tool_matrix.py`; they do not
-  reproduce when the file runs alone, so the leaking test is not yet identified.
-- Every `TestPlexRatingsEndToEnd` test in `test_engine_vs_fake.py` costs ~10.5s (re-measured 2026-10-10, run alone;
-  `.test_durations` records ~1.7s and is stale for these); a shared fixture would likely cut most of it.
+  reproduce when the file runs alone, nor beside `test_assistant_mcp.py` with tracemalloc on (2026-10-11).
+  Candidate, unconfirmed: `_wire_app` (~line 249) binds sockets that only `stop()` inside the `try` closes, so
+  a raise in `create_app`/`start()`/`wait_until_up` before the `try` leaks them.
+- Every `TestPlexRatingsEndToEnd` test in `test_engine_vs_fake.py` costs ~10.3s. Profiled 2026-10-11: setup is
+  ~0.75s; the rest is `engine_run` itself — ~460 HTTP round trips to the fakes, mostly plexapi lazily reloading
+  items (`plexapi/base.py __getattribute__`, 7.4s). A shared fixture cannot help (each test runs the engine with
+  its own ratings). Cutting it means fewer per-item reloads in the engine (a product change, and it would speed
+  real runs too) or a smaller fake library.
 
 ---
 
@@ -123,6 +136,30 @@ the first run after the upgrade, not from the row's whole history.
 Everything below is fixed, resolved or not a bug. Newest first, then older audits.
 
 ---
+
+
+## CLOSED 2026-10-11 — a failure before anything was sent blocked the title for good
+
+- Found by the #154 architecture review. A TMDB failure during a show's TheTVDB lookup, an Arr lookup or tag
+  call failing before the add POST, or an Arr answering "could not find this title" all returned `"error"`,
+  which the request claim records as `outcome_unknown` — excluded from every later run and refused by the
+  inbox until the owner released it by hand. They now return `skipped_not_sent` (in `_REQUEUED_SKIPS`, so the
+  inbox still shows the reason); `ArrNotSentError` marks Arr calls made before the POST. A failed add POST is
+  still `"error"`, because it may have landed.
+
+---
+
+## CLOSED 2026-10-11 — 1.11.0 release review leftover
+
+- `0109_non_reusable_row_ids.py` stopped the upgrade on one unparseable JSON value. Now skips and logs a bad
+  value in `runs`/`jobs`/`events` (history the app cannot read back either, so it points nothing at a row);
+  an unreadable assistant record (authority) still stops it. Amended with `check_migration_freeze.py --amend`.
+  Tests: `test_migration_0109.py::test_0109_skips_unreadable_history_json_*`, `..._still_refuses_an_unreadable_assistant_grant`.
+
+- `test_pipeline_row_overrides.py` (~2,500 lines) split: `TestPerRowOverrides` + `TestSharedRowsAndRunControl`
+  stay, `test_pipeline_row_overrides_refresh.py` holds refresh/naming and pick order, shared helpers in
+  `row_overrides_support.py`. 102 tests before and after.
+- First real `replay_eval.py` run — results under OPEN → Engine tuning.
 
 ## CLOSED 2026-10-10 — pre-release review leftovers (reviewed 2026-10-09, worked 2026-10-10)
 

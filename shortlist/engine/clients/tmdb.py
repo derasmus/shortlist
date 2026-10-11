@@ -60,6 +60,11 @@ class NullCache:
         return None
 
 
+#: The bottom of a ranked list is worth half its top. Shared by TMDB suggestions and the AI-search credit's
+#: position decay (`ranking.apply_web_credit_mode`).
+POSITION_DECAY = 0.5
+
+
 class TmdbClient:
     def __init__(
         self,
@@ -114,7 +119,7 @@ class TmdbClient:
     # only thing left to rank on was TMDB's average rating, which is how a well-rated but unrelated
     # show beat an obviously-similar one.
     _ENDPOINT_WEIGHT: ClassVar[dict[str, float]] = {"recommendations": 1.0, "similar": 0.6}
-    _POSITION_DECAY = 0.5  # the bottom of a list is worth half its top
+    _POSITION_DECAY = POSITION_DECAY
 
     def suggestions(self, tmdb_id: int, media_type: MediaType) -> list[tuple[dict, float]]:
         """Pooled /recommendations + /similar for one seed, each with an affinity in (0, 1].

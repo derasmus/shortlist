@@ -6,6 +6,65 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-12
+
+### Added
+
+- **AI web search can look further back in someone's history** ([#152](https://github.com/stevezau/shortlist/issues/152)).
+  Until now it only looked at what they watched lately. **Settings, Defaults, How much of their history it
+  searches from** adds their long-time favourites and older watches from across the years, as presets from
+  Recent only (the default, nothing changes) to Deep. A row or one person on a row can set their own, a
+  person's page has **Show this week's mix** with a **Don't use** button on each title, and **How we
+  picked** shows what each search was for. With Exa or SearXNG each extra title is one more search; with
+  the AI's own search there is no extra cost. A title they rated at or below the "didn't like it" line in
+  any library is never used as a favourite. Adds migration 0112.
+
+- **Choose how many seasons of a show to request, on either route** ([#154](https://github.com/stevezau/shortlist/issues/154)).
+  **How much of a show to grab** now has a **Start from** (First or Last seasons) and a **How many seasons**
+  count, or **Every season**, and it works when requests go through Overseerr, Jellyseerr or Seerr as well as
+  straight to Sonarr. Rows can set their own. **If you request through Overseerr, check this setting after
+  upgrading:** a First or Last Season choice made for Sonarr used to be ignored there (every season was
+  requested), and now applies. Pilot episode and Add unmonitored stay Sonarr-only; through Overseerr a show
+  set to one of them is not sent, and waits in the inbox with the reason until you pick another choice.
+  Rows already set to First or Last Season keep taking one season. On both routes, Last seasons skips a
+  season that has been announced but hasn't started airing, so a request downloads something now.
+  Adds migration 0113.
+
+### Fixed
+
+- **A request that failed before anything was sent no longer blocks that title for good.** If TMDB couldn't be
+  reached to find a show's TheTVDB id, or Sonarr or Radarr failed while looking a title up, the request was
+  treated as possibly sent and never tried again until you released it on the Requests page. It now waits in
+  the inbox with the reason and is tried again next run. A send that may really have reached Sonarr or Radarr
+  is still held back for you to check. A title that would be refused again the next night (Sonarr or Radarr
+  can't find it, TMDB lists no seasons yet, or a mode Overseerr can't take) waits in the inbox and is only
+  sent automatically again after a week, or sooner if you change where or how it is requested, so it never
+  takes an auto-send slot from the titles below it. You can still send it from the inbox at any time.
+
+- **A SearXNG search whose engines were all failing no longer counts as "nothing found"** ([#152](https://github.com/stevezau/shortlist/issues/152)). An empty page from blocked or rate-limited engines was cached for a week as a real empty answer; it is now a failed search, retried next run.
+- **A local Ollama model that answered AI web search in prose now says why** ([#152](https://github.com/stevezau/shortlist/issues/152)). Ollama's default context window cuts off the start of Shortlist's prompt; the run trace and Settings Test now point to `OLLAMA_CONTEXT_LENGTH=16384`.
+- **AI web search titles now reach rows** ([#152](https://github.com/stevezau/shortlist/issues/152)). The titles the
+  AI found were ranked below every title TMDB suggested, so they almost never made it into a row: in one
+  46-person run, 65 of 92 "Picked for You" rows held none. Each is now credited to the watches that led to it,
+  so it competes with those watches' similar titles (with Exa or SearXNG; the AI's own search is unchanged, as
+  crediting it made rows less accurate). With SearXNG the AI is asked to name the watched title behind each
+  proposal, a few extra output tokens. **Run details** shows how much of a run the AI search supplied.
+- **Agregarr trailer placeholders no longer count as the real title** ([#151](https://github.com/stevezau/shortlist/issues/151)).
+  Playing one of Agregarr's stand-in trailers used to count as watching the film, and as finishing a show
+  that wasn't on the server yet. A title with both a real copy and a trailer could also put the trailer in a
+  row. Trailer plays are now ignored and rows use the real copy. A title that only has a trailer can
+  still go in a row, and playing its trailer no longer counts as watching that pick in the reports.
+- **AI web search no longer describes titles it shouldn't** ([#152](https://github.com/stevezau/shortlist/issues/152)). The list of someone's recent watches sent to the
+  AI now leaves out titles marked "Don't seed" and titles they rated at or below the "didn't like it" line
+  (when "Respect Plex ratings" is on). A row pinned to some libraries now describes only what was watched in
+  them, as its seeds already did.
+- **Adding a season to a row is quicker and keeps your place.** The Add button no longer waits for the whole
+  rows list to reload, which took seconds while a run was going, and the page no longer jumps up to the
+  season list afterwards.
+- **An upgrade no longer stops on one unreadable history record.** Upgrading to 1.11 refused to start if a
+  run, job or activity-log entry held text that was not valid JSON (only possible after a hand edit). It is
+  now skipped with a warning in the log.
+
 ## [1.11.0] - 2026-10-10
 
 Back up `/config` before upgrading: this release adds database migrations 0102 to 0111. No settings need

@@ -19,7 +19,9 @@ Three rules, all learned the hard way:
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
+from shortlist.engine.clients.tmdb import POSITION_DECAY
 from shortlist.engine.models import Candidate
 
 _UNATTRIBUTED = "_unattributed"  # a hand-built candidate carrying no source tag
@@ -307,3 +309,77 @@ def diversify_by_seed(candidates: list[Candidate], keep: int) -> list[Candidate]
         if not progressed:  # every queue is exhausted
             break
     return picked
+
+
+#: How the AI-search credit is priced (#152). Production is ``EngineConfig.web_credit_mode`` ("scaled:0.7"); the
+#: rest, and any other ``scaled:<f>``, are calibration variants the replay ranks from one gathered pool.
+WEB_CREDIT_MODES = ("off", "full", "decayed", "single", "decayed_single")
+
+
+def without_web_credit(pool: list[Candidate]) -> list[Candidate]:
+    """The pool as it ranked before the AI search was credited to the watches that found its titles (#152).
+
+    Each candidate loses the seeds the search added and gets back the affinity it had before the search touched
+    it: the neutral one when the search found it alone. The gathered candidates are left as they were.
+    """
+    stripped: list[Candidate] = []
+    for candidate in pool:
+        if not candidate.web_seeds:
+            stripped.append(candidate)
+            continue
+        added = {(seed.tmdb_id, seed.media_type) for seed in candidate.web_seeds}
+        stripped.append(
+            replace(
+                candidate,
+                seeds=[seed for seed in candidate.seeds if (seed.tmdb_id, seed.media_type) not in added],
+                web_seeds=[],
+                pre_web_affinity=None,
+                affinity=1.0 if candidate.pre_web_affinity is None else candidate.pre_web_affinity,
+            )
+        )
+    return stripped
+
+
+def apply_web_credit_mode(pool: list[Candidate], mode: str) -> list[Candidate]:
+    """The pool with the AI-search credit priced the way ``mode`` says; the input is never mutated.
+
+    - ``off``: no credit at all, as if the search had never named a seed.
+    - ``full``: as gathered.
+    - ``decayed``: a title the search found alone has its coherence scaled down by where it sat in the
+      crediting search's list, by the same decay a TMDB suggestion gets. No position, no decay.
+    - ``single``: only the first crediting seed is kept.
+    - ``decayed_single``: both.
+    - ``scaled:<f>``: full credit, with a title the search found alone scored at ``f`` of its affinity.
+
+    Raises:
+        ValueError: ``mode`` is not one of `WEB_CREDIT_MODES` or a ``scaled:<f>`` with ``0 < f <= 1``.
+    """
+    if mode.startswith("scaled:"):
+        factor = float(mode.split(":", 1)[1])
+        if not 0 < factor <= 1:
+            raise ValueError(f"web credit scale must be in (0, 1], got {factor}")
+        return [
+            replace(c, affinity=c.affinity * factor) if c.web_seeds and c.pre_web_affinity is None else c for c in pool
+        ]
+    if mode not in WEB_CREDIT_MODES:
+        raise ValueError(f"unknown web credit mode {mode!r}; expected one of {', '.join(WEB_CREDIT_MODES)}")
+    if mode == "off":
+        return without_web_credit(pool)
+    if mode == "full":
+        return list(pool)
+    decay = mode in ("decayed", "decayed_single")
+    single = mode in ("single", "decayed_single")
+    out: list[Candidate] = []
+    for candidate in pool:
+        if not candidate.web_seeds:
+            out.append(candidate)
+            continue
+        changes: dict = {}
+        if single:
+            dropped = {(s.tmdb_id, s.media_type) for s in candidate.web_seeds[1:]}
+            changes["web_seeds"] = candidate.web_seeds[:1]
+            changes["seeds"] = [s for s in candidate.seeds if (s.tmdb_id, s.media_type) not in dropped]
+        if decay and candidate.web_coherence is not None and candidate.web_position is not None:
+            changes["affinity"] = candidate.web_coherence * (1 - POSITION_DECAY * candidate.web_position)
+        out.append(replace(candidate, **changes) if changes else candidate)
+    return out

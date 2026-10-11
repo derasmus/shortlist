@@ -65,6 +65,8 @@ export const queryKeys = {
   userRunsSummary: (id: number) => ["users", id, "runs", "summary"] as const,
   homeUsers: ["watching-account", "candidates"] as const,
   userHistory: (id: number) => ["users", id, "history"] as const,
+  userHistoryMix: (id: number, collectionId: number) =>
+    ["users", id, "history-mix", collectionId] as const,
   userWatched: (id: number, filters: WatchedFilters) =>
     ["users", id, "watched", filters] as const,
   session: ["auth", "session"] as const,
@@ -689,17 +691,22 @@ export function useLibrarySearch(q: string) {
   return useSeasonSearch("library", q, api.searchLibrary);
 }
 
-/** After any season is saved or deleted: the catalogue, the presets still on offer, and the rows —
- *  a delete unticks the season from every row that had it. Awaited, so a caller that ticks the new
- *  season reads a catalogue that already has it. */
-function useInvalidateSeasons() {
+/** After any season is saved or deleted: the catalogue, the presets still on offer, and the rows.
+ *  The catalogue and presets are always awaited, so a caller that ticks the new season reads a catalogue
+ *  that already has it and no card offers it twice. The rows are awaited only after a delete, which
+ *  unticks the season from every row that had it: the editor compares its form with the saved row, and
+ *  a stale one would show the deletion as an unsaved change. A save changes no row, and building the
+ *  list is the server's slowest read (it held the save's spinner for seconds while a run was going). */
+function useInvalidateSeasons({ awaitRows = false }: { awaitRows?: boolean } = {}) {
   const queryClient = useQueryClient();
-  return () =>
-    Promise.all([
+  return () => {
+    const rows = queryClient.invalidateQueries({ queryKey: queryKeys.collections });
+    return Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.seasons }),
       queryClient.invalidateQueries({ queryKey: queryKeys.seasonPresets }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.collections }),
+      awaitRows ? rows : undefined,
     ]);
+  };
 }
 
 export function useCreateSeason() {
@@ -720,7 +727,7 @@ export function useUpdateSeason() {
 }
 
 export function useDeleteSeason() {
-  const invalidate = useInvalidateSeasons();
+  const invalidate = useInvalidateSeasons({ awaitRows: true });
   return useMutation({
     mutationFn: (slug: string) => api.deleteSeason(slug),
     onSuccess: invalidate,
@@ -781,6 +788,16 @@ export function useUserHistory(id: number) {
     queryKey: queryKeys.userHistory(id),
     queryFn: () => api.getUserHistory(id),
     retry: false, // a live per-user Plex read; surface the error rather than hammering
+  });
+}
+
+/** This week's history mix for one row; fetched only once `enabled` (a live per-user Plex read). */
+export function useHistoryMix(id: number, collectionId: number, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.userHistoryMix(id, collectionId),
+    queryFn: () => api.getHistoryMix(id, collectionId),
+    enabled,
+    retry: false,
   });
 }
 

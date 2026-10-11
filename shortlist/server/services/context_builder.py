@@ -54,6 +54,7 @@ from shortlist.engine.models import (
     row_language_mode_or_inherit,
     row_languages_or_inherit,
     row_monitor_or_inherit,
+    row_season_count_or_inherit,
 )
 from shortlist.engine.provider_calls import ProviderCallControls
 from shortlist.engine.requests import AcquisitionGuard
@@ -83,7 +84,11 @@ from shortlist.server.services.delivery_snapshots import utc
 from shortlist.server.services.pick_history import DbPickHistory
 from shortlist.server.services.plex_reachability import explained
 from shortlist.server.services.poster_service import load_upload, make_studio
-from shortlist.server.services.request_actions import AutomaticRequestGuard, durable_handled_requests
+from shortlist.server.services.request_actions import (
+    AutomaticRequestGuard,
+    durable_handled_requests,
+    recently_refused_requests,
+)
 from shortlist.server.services.season_catalogue import load_catalogue
 from shortlist.server.services.sse import EventBus
 from shortlist.server.services.theme_store import spec_from_row
@@ -246,6 +251,7 @@ def row_request_overrides(collection: Collection) -> RequestOverrides | None:
     """
     if collection.build == "shared":
         return None
+    row_mode = row_monitor_or_inherit(collection.req_sonarr_monitor)
     overrides = RequestOverrides(
         min_rating=collection.req_min_rating,
         min_votes=collection.req_min_votes,
@@ -260,7 +266,9 @@ def row_request_overrides(collection: Collection) -> RequestOverrides | None:
         radarr_root_folder=collection.req_radarr_root_folder or None,
         sonarr_quality_profile_id=collection.req_sonarr_quality_profile_id,
         sonarr_root_folder=collection.req_sonarr_root_folder or None,
-        sonarr_monitor=row_monitor_or_inherit(collection.req_sonarr_monitor),
+        sonarr_monitor=row_mode,
+        # Only with the row's own mode: the editor shows a row with no mode as inheriting both.
+        season_count=row_season_count_or_inherit(collection.req_season_count) if row_mode is not None else None,
         language_mode=row_language_mode_or_inherit(collection.req_language_mode),
         preferred_languages=row_languages_or_inherit(collection.req_preferred_languages),
         min_rating_other=collection.req_min_rating_other,
@@ -558,6 +566,7 @@ class ContextBuilder:
                 # complete picture converge needs before it may DELETE an unattributable collection.
                 may_delete_orphans=True,
                 handled_requests=self._handled_requests(session),
+                refused_requests=recently_refused_requests(session),
                 acquisition_guard=(
                     acquisition_guard if acquisition_guard is not None else AutomaticRequestGuard(self._sessions)
                 ),
@@ -1088,7 +1097,11 @@ class ContextBuilder:
             if slug is None:
                 continue
             out.setdefault(row.user_id, {})[slug] = RowOverride(
-                muted=row.muted, size=row.row_size, recent_count=row.recent_count
+                muted=row.muted,
+                size=row.row_size,
+                recent_count=row.recent_count,
+                favourite_count=row.favourite_count,
+                older_count=row.older_count,
             )
         return out
 
@@ -1179,6 +1192,10 @@ class ContextBuilder:
             # DEFAULTS value when the key is unset, so the zero survives.
             orphan_confirm_delay_s=float(store.get("plex.orphan_confirm_delay_s")),
             recent_count=int(store.get("recommendations.recent_count") or 10),
+            # No `or` fallback: 0 is the default and a legal choice.
+            favourite_count=int(store.get("recommendations.favourite_count")),
+            older_count=int(store.get("recommendations.older_count")),
+            older_lookback_years=int(store.get("recommendations.older_lookback_years")),
             max_seeds=int(store.get("recommendations.max_seeds") or 30),
             rating_source=store.get("recommendations.rating_source") or "tmdb",
             min_history=int(store.get("recommendations.min_history") or 10),
@@ -1305,6 +1322,8 @@ class ContextBuilder:
                     idle_hold_days=collection.idle_hold_days,  # None -> inherit the global idle ceiling
                     recency=collection.recency,  # None -> inherit the global recency
                     recent_count=collection.recent_count,  # None -> inherit the global recent_count
+                    favourite_count=collection.favourite_count,  # None -> inherit the global favourite_count
+                    older_count=collection.older_count,  # None -> inherit the global older_count
                     max_seeds=collection.max_seeds,  # None -> inherit the global recommendations.max_seeds
                     max_runtime=collection.max_runtime,  # the four limits: None = no limit
                     min_year=collection.min_year,
@@ -1618,6 +1637,7 @@ class ContextBuilder:
             auto_min_rating=float(store.get("requests.auto_min_rating")),
             auto_user_tag=bool(store.get("requests.auto_user_tag")),
             sonarr_monitor=store.get("requests.sonarr.monitor") or "all",
+            season_count=int(store.get("requests.season_count") or 1),
             hold_genres=frozenset(int(g) for g in store.get("requests.hold_genres") or []),
             hold_tags=frozenset(int(t) for t in store.get("requests.hold_tags") or {}),
             language_mode=store.get("requests.language_mode") or "any",

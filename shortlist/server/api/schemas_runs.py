@@ -163,6 +163,13 @@ class RunSummaryOut(PassthroughModel):
     privacy: RunPrivacyOut | None
 
 
+class WebShareOut(PassthroughModel):
+    """The share of a run's delivered picks that the AI web search found (#152). None = no picks to share."""
+
+    picked: float | None  # the default "Picked for You" row
+    all: float | None  # every person's rows
+
+
 class RunDetailOut(RunSummaryOut):
     """A run plus every person in it, and every shared row it built."""
 
@@ -170,6 +177,8 @@ class RunDetailOut(RunSummaryOut):
     #: Empty on a run recorded before shared rows had a record of their own — the row may well have
     #: built, so the UI says "not recorded for this run" rather than "no shared rows".
     shared_rows: list[RunSharedRowOut]
+    #: None when the run did not use the AI web search, so the page shows no line rather than "0%".
+    web_share: WebShareOut | None = None
 
 
 class RunsSummaryOut(PassthroughModel):

@@ -219,6 +219,12 @@ class Collection(Base):
     # How many of a person's most recent watches the web-search source searches for this row (one
     # cached search each). NULL -> inherit the global recommendations.recent_count.
     recent_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # How many long-time favourites and older watches it searches too (#152). NULL -> inherit the global
+    # recommendations.favourite_count / older_count.
+    # No `default=None`: an unset column is left out of the INSERT, so tests that insert a row at an older
+    # migration revision keep working.
+    favourite_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    older_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # How many watched titles SEED this row — what every source searches from, not just the web one.
     # NULL -> inherit the engine default (30).
     max_seeds: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
@@ -296,6 +302,8 @@ class Collection(Base):
     # choice). NULL -> inherit the global `requests.sonarr.monitor`. A kids row can take season 1
     # only while everything else keeps the whole run of a show.
     req_sonarr_monitor: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    # How many seasons "firstSeason"/"lastSeason" take for THIS row. NULL -> inherit `requests.season_count`.
+    req_season_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     # This row's language preference for requests. NULL -> inherit the global `requests.language_mode`
     # / `requests.preferred_languages` / `requests.min_rating_other`. A kids row can be English-only
     # while an anime row stays on "any".
@@ -480,6 +488,9 @@ class CollectionUserOverride(Base):
     # How many recent watches the AI web-search source searches for THIS person on THIS row (1..25).
     # None -> fall through to the row's own recent_count, then the global recommendations.recent_count.
     recent_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The same for long-time favourites and older watches (#152); None -> the row's own, then the global.
+    favourite_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    older_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 

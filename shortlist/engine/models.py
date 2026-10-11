@@ -250,6 +250,18 @@ class Candidate:
     # in engine/requests.py (and `_language_allowed`, its base-gate wrapper).
     language: str = ""
     seeds: list[Seed] = field(default_factory=list)  # every seed that suggested it
+    # The seeds the AI web search was credited to this title (#152): also in `seeds`, kept apart so the
+    # replay can rank the same pool with the credit taken off.
+    web_seeds: list[Seed] = field(default_factory=list)
+    # The affinity this title had before the web search credited it; None when the search found it alone.
+    # The replay restores it to rank the pool without the credit.
+    pre_web_affinity: float | None = None
+    # The genre coherence the credit priced a title the search found alone with (it is then the title's
+    # affinity); None when another source had already scored it or nothing credited it.
+    web_coherence: float | None = None
+    # Structured (Exa) path only: the best place the title held in a crediting seed's extraction list,
+    # 0 = first, 1 = last. None for RAG, native and `because` credit. Calibration input for the replay.
+    web_position: float | None = None
     rating_key: int | None = None  # set once matched to the library
     # Which candidate source(s) produced it. Ranking needs this: seedless sources (tmdb_discover,
     # llm_web) would otherwise be crowded out wholesale by the seeded ones — see ranking.pre_rank,
@@ -285,6 +297,17 @@ class Candidate:
     @property
     def top_seed(self) -> Seed | None:
         return max(self.seeds, key=lambda s: s.weight) if self.seeds else None
+
+    @property
+    def naming_seed(self) -> Seed | None:
+        """The strongest seed a similarity source gave it: what names a row and decides whether its seed moved.
+
+        Seeds only the AI web search credited are left out, so a row is named and rebuilt as it was before
+        that credit existed (#152).
+        """
+        credited = {(s.tmdb_id, s.media_type) for s in self.web_seeds}
+        own = [s for s in self.seeds if (s.tmdb_id, s.media_type) not in credited]
+        return max(own, key=lambda s: s.weight) if own else None
 
 
 @dataclass(frozen=True)
@@ -355,6 +378,8 @@ class RowOverride:
     muted: bool = False  # this person doesn't get this row at all
     size: int | None = None  # override the row's size for this person
     recent_count: int | None = None  # override how many recent watches the web-search source searches
+    favourite_count: int | None = None  # override how many long-time favourites it searches too
+    older_count: int | None = None  # override how many older watches it searches too
 
 
 @dataclass
@@ -589,6 +614,10 @@ class RowSpec:
     # broader reach. Only affects the llm_web source; TMDB/Trakt still use the full seed set. None ->
     # inherit EngineConfig.recent_count.
     recent_count: int | None = None
+    # How many long-time favourites and older watches the WEB-SEARCH source searches for this row on top of
+    # the recent ones (#152, the "history mix"). None -> inherit EngineConfig; 0 turns that group off.
+    favourite_count: int | None = None
+    older_count: int | None = None
     # How many of this person's watched titles SEED this row — the titles every source searches from.
     # Unlike recent_count (which only caps the web-search source), this caps the seed set itself, so it
     # decides what the whole row is derived from. Small values make a row about one or two things they
@@ -873,6 +902,15 @@ def row_monitor_or_inherit(stored: str | None) -> str | None:
     return stored if stored in SONARR_MONITOR_MODES else None
 
 
+def row_season_count_or_inherit(stored: int | None) -> int | None:
+    """One row's stored season count, or None (inherit) when it is not a count the editor offers.
+
+    Same degrade-to-inherit contract as :func:`row_monitor_or_inherit`: the API refuses a count
+    outside 1-99, so a row holding one could not be saved at all if it were served as itself.
+    """
+    return stored if isinstance(stored, int) and 1 <= stored <= 99 else None
+
+
 @dataclass(frozen=True)
 class ArrTarget:
     """Where and how a Sonarr/Radarr instance should file a newly-requested title."""
@@ -1011,6 +1049,9 @@ class RequestConfig:
     # A long-running show on "all" backfills every season the night it is added (issue #100), where a
     # taster ("firstSeason") or a catch-up-from-here ("none", added unmonitored) is often what was meant.
     sonarr_monitor: str = "all"
+    # How many seasons "firstSeason"/"lastSeason" take, on either request route; ignored by the other
+    # modes. 1 is what those two modes always meant, so an upgrade changes nothing.
+    season_count: int = 1
     # TMDB movie genre ids and tag (keyword) ids the owner never wants requested automatically. A movie
     # with any of them waits in the inbox instead (`request_holds`); empty, the default, holds nothing.
     hold_genres: frozenset[int] = frozenset()
@@ -1065,6 +1106,8 @@ class RequestOverrides:
     # it is a row that has cleared its language list, which in "only" mode requests nothing at all.
     preferred_languages: tuple[str, ...] | None = None
     min_rating_other: float | None = None
+    # Appended last, per the positional hazard above.
+    season_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1154,7 +1197,8 @@ class RequestOutcome:
     tmdb_id: int
     title: str
     media_type: MediaType
-    # requested | would_request | skipped_present | skipped_no_tvdb | skipped_no_target | error
+    # requested | would_request | skipped_present | skipped_no_tvdb | skipped_no_target | skipped_unsupported
+    # | skipped_no_seasons | skipped_not_sent | skipped_not_found | error
     status: str
     detail: str = ""
     # The arr's own titleSlug (Sonarr/Radarr) for the resolved title, so the inbox can deep-link
@@ -1298,6 +1342,19 @@ class EngineConfig:
     # How many of a person's most recent watched titles the web-search source searches per row (one
     # cached Exa search each). Row-overridable via RowSpec.recent_count.
     recent_count: int = 10
+    # The history mix (#152): web searches for a person's long-time favourites and older watches, on top of
+    # the recent ones. Either above 0 tells the AI their whole `TasteProfile` rather than the recent titles.
+    # Older watches must be newer than `older_lookback_years` (0 = any time). Row- and person-overridable.
+    favourite_count: int = 0
+    older_count: int = 0
+    older_lookback_years: int = 0
+    # Whether an AI web-search title is credited to the watches that found it (#152). Internal, not a setting:
+    # False sends and ranks exactly as it did before the credit existed.
+    credit_web_titles: bool = True
+    # How that credit is priced, see `ranking.apply_web_credit_mode`. Internal, not a setting. Replay of 230
+    # held-out discoveries (2026-10-11): full credit cost 2-4 hits; 0.7 kept them and still roughly doubled
+    # the AI search's share of row titles.
+    web_credit_mode: str = "scaled:0.7"
     # When True (default), a DISABLED (opted-out) Shortlist user has EVERY shared row hidden too — even
     # public "Popular on this server" rows — so disabling someone removes them from Shortlist entirely.
     hide_shared_from_disabled: bool = True

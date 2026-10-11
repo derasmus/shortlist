@@ -18,12 +18,19 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 
 from loguru import logger
 
-from shortlist.engine.clients.search import SearchResult, TitleCandidate, WebSearchProvider, extracts_titles
+from shortlist.engine.clients.search import (
+    SearchResult,
+    SearchUnavailable,
+    TitleCandidate,
+    WebSearchProvider,
+    extracts_titles,
+)
 from shortlist.engine.clients.tmdb import Cache, NullCache, TmdbClient
 from shortlist.engine.clients.trakt import TraktClient
 from shortlist.engine.curator.base import (
@@ -34,6 +41,8 @@ from shortlist.engine.curator.base import (
     try_parse_web_titles,
 )
 from shortlist.engine.models import MAX_ROW_SIZE, Attribution, Candidate, MediaType, Seed, UserProfile
+from shortlist.engine.ranking import apply_web_credit_mode
+from shortlist.engine.taste import TastePrompt
 from shortlist.engine.web_guidance import Guidance
 
 # One cached web search PER recent title (Exa bills per search): cache the RESULTS by (media, tmdb_id)
@@ -57,6 +66,9 @@ _WEB_SEARCH_RAG_CAP = 40  # cap the unioned results handed to the web-search LLM
 # point of the structured path: the curator picks from everything the searches found instead of from
 # a rationed slice of it.
 _WEB_PICK_CAP = 300
+_MIN_SNIPPET_TITLE_CHARS = 4  # a shorter title ("It", "You") is in almost any text
+_MAX_CREDITED_SEEDS = 3  # a web title is credited to at most this many watches, in search order
+_KIND_ORDER = ("recent", "favourite", "older")  # which kind owns a title several searches found
 # A normal reply is ~2,500 characters, so real failures are kept whole; a runaway one must not bloat the run trace.
 _UNPARSED_REPLY_CAP = 20_000
 # A search that came back nearly empty is cached BRIEFLY rather than for the usual week. Exa's
@@ -123,6 +135,12 @@ class GatherStats:
     # never reads it back. Shape: {"sources": [{source, status, contributed, sample, detail}],
     # "web": {mode, searches, rag_system, rag_user, proposed, resolved}}.
     trace: dict = field(default_factory=dict)
+    # Everything the web search extracted, deduped, before the AI picked from it. Not persisted and not in
+    # the trace: it exists so the replay can tell "the search found it" from "the AI picked it" (#152).
+    web_found: list[TitleCandidate] = field(default_factory=list)
+    # The same extraction per search, as (kind, titles) in search order, so the replay can tell which kind of
+    # search found a title. Not persisted either.
+    web_found_by_search: list[tuple[str, list[TitleCandidate]]] = field(default_factory=list)
 
     def add_tokens(self, source: str, n: int, output: int = 0) -> None:
         """Add a source's token spend, `output` of it being output (a no-op for 0, e.g. NullCurator or a
@@ -175,6 +193,12 @@ def web_recommendations(
     cache: Cache | None = None,
     recent_count: int = _WEB_SEARCH_MAX_TITLES,
     guidance: Guidance | None = None,
+    taste: TastePrompt | None = None,
+    favourite_seeds: list[Seed] | None = None,
+    favourite_count: int = 0,
+    older_seeds: list[Seed] | None = None,
+    older_count: int = 0,
+    credit: bool = False,
 ) -> list[dict]:
     """Titles to watch next from a web search, as ``[{title, year, media}]`` for TMDB resolution.
 
@@ -194,6 +218,15 @@ def web_recommendations(
     ``stats`` accumulates this source's token spend (and searches) for per-run AI accounting —
     read ``last_tokens`` right after each LLM call, before the next one overwrites it.
     ``guidance`` is this row's AI instructions (#138), handed to whichever prompt the backend sends.
+    ``taste`` is the history text for the pick prompt (#152), scoped to the row; None keeps the 20 newest titles.
+    ``favourite_seeds`` / ``favourite_count`` add up to that many long-time favourites, and ``older_seeds`` /
+    ``older_count`` that many older watches, to the external path's searches. The native path takes ``taste``
+    but not the seeds: the model picks its own.
+
+    ``credit`` (#152) gives each proposal the seeds it is credited to, as ``rec["for"]``: the watches whose search
+    found it, else the watched title the model named as its ``because``, which the snippet prompt asks for. Only
+    the external paths credit: native titles stay uncredited, as crediting them cost hits (measured 2026-10-11).
+    Without it the prompts and the proposals are what they always were.
     """
     web_trace: dict = {"mode": mode}
     stats.trace["web"] = web_trace
@@ -211,12 +244,20 @@ def web_recommendations(
             cache=cache,
             recent_count=recent_count,
             guidance=guidance,
+            taste=taste,
+            favourite_seeds=favourite_seeds,
+            favourite_count=favourite_count,
+            older_seeds=older_seeds,
+            older_count=older_count,
+            credit=credit,
         )
     elif not getattr(curator, "supports_native_web_search", False):
         return []
     else:
         _clear_last_tokens(curator)
-        recs = curator.recommend_web(profile, seeds, k, guidance=guidance)
+        # Only passed when there is one, so a curator that predates the argument is called as it always was.
+        native_extras = {"taste": taste} if taste is not None and taste.wide else {}
+        recs = curator.recommend_web(profile, seeds, k, guidance=guidance, **native_extras)
         stats.add_tokens("llm_web", getattr(curator, "last_tokens", 0), getattr(curator, "last_output_tokens", 0))
     recs = _drop_watched_proposals(recs, seeds, profile, web_trace)
     # Cap here, not before the filter: the keyless path hands back every extracted title so that
@@ -271,6 +312,19 @@ def _capped_reply(reply: str) -> str:
     return f"{reply[:_UNPARSED_REPLY_CAP]}\n… [truncated; reply was {len(reply)} characters]"
 
 
+def _local_model_prose_hint(system: str, user: str) -> str:
+    """Why a local model's reply was unparseable, when Ollama truncating the prompt is the likely cause.
+
+    Ollama's default window is 2-4k tokens, its OpenAI-compatible API cannot raise it per request, and
+    it drops the START of an oversized prompt — the system instructions. Sizes only; never the prompt.
+    """
+    tokens = (len(system) + len(user)) // 4
+    return (
+        "the local model answered in prose — if it is Ollama, its context window is probably too small "
+        f"for this prompt (~{tokens:,} tokens); set OLLAMA_CONTEXT_LENGTH=16384 on the Ollama server"
+    )
+
+
 def _web_via_search(
     curator,
     search,
@@ -283,10 +337,18 @@ def _web_via_search(
     cache: Cache | None = None,
     recent_count: int = _WEB_SEARCH_MAX_TITLES,
     guidance: Guidance | None = None,
+    taste: TastePrompt | None = None,
+    favourite_seeds: list[Seed] | None = None,
+    favourite_count: int = 0,
+    older_seeds: list[Seed] | None = None,
+    older_count: int = 0,
+    credit: bool = False,
 ) -> list[dict]:
     """External-search path: one CACHED web search per recent title, then the curator picks from the
     union. Caching by (media, tmdb_id) means a title many users watched is searched once server-wide —
     Exa bills per search, so this is what keeps the per-title approach affordable across a big roster.
+
+    ``credit`` (#152) gives each proposal the seeds it is credited to (``rec["for"]``); see `web_recommendations`.
 
     ``web_trace`` (optional) collects a display record of the queries sent, whether each was cached,
     the RAG prompt handed to the curator, and the titles it proposed — the raw material of the run
@@ -312,8 +374,8 @@ def _web_via_search(
         # configured mode.
         web_trace["provider"] = provider
         web_trace["structured"] = structured
-    searched = seeds[: max(1, recent_count)]
-    for seed in searched:
+    searched = _seeds_to_search(seeds, recent_count, favourite_seeds, favourite_count, older_seeds, older_count)
+    for seed, kind in searched:
         key = f"{_WEB_SEARCH_CACHE_PREFIX}:{provider}:{seed.media_type.value}:{seed.tmdb_id}"
         query = build_web_query_for_title(seed.title)
         cached = cache.get(key)
@@ -365,6 +427,7 @@ def _web_via_search(
                 "seed": seed.title,
                 "query": query,
                 "cached": cached is not None,
+                "kind": kind,
                 "returned": returned[:_TRACE_RETURNS_SAMPLE],
             }
         )
@@ -376,7 +439,12 @@ def _web_via_search(
     if failed_seeds and len(failed_seeds) == len(searched):
         raise RuntimeError(f"every web search failed ({len(failed_seeds)} seeds)")
     results = _interleave(per_seed)
-    candidates = _drop_seed_titles(_dedupe_titles(_interleave(per_seed_titles)), seeds)
+    candidates = _drop_seed_titles(
+        _dedupe_titles(_interleave(per_seed_titles)),
+        [*seeds, *(seed for seed, kind in searched if kind != "recent")],
+    )
+    stats.web_found = list(candidates)
+    stats.web_found_by_search = list(zip((kind for _, kind in searched), per_seed_titles, strict=True))
     if web_trace is not None:
         web_trace["searches"] = trace_queries
         # Sampled like every other trace list. The prompt may carry 300 candidates; the trace is
@@ -393,12 +461,24 @@ def _web_via_search(
     # and carries every seed's findings rather than a capped slice. An extraction that came back
     # empty — a mode that declined to synthesise, a shape change — still has the snippets, so this
     # degrades to exactly the path that shipped before rather than to nothing.
+    read_snippets = False
     if candidates:
-        system, user = build_web_pick_prompt(profile, candidates[:_WEB_PICK_CAP], k, guidance=guidance)
+        kinds = [kind for _, kind in searched]
+        if structured and any(kind != "recent" for kind in kinds):
+            groups, shares = _fair_share(candidates, per_seed_titles, kinds, k)
+            if web_trace is not None:
+                web_trace["shares"] = shares
+            system, user = build_web_pick_prompt(profile, [], k, guidance=guidance, taste=taste, groups=groups)
+        else:
+            system, user = build_web_pick_prompt(profile, candidates[:_WEB_PICK_CAP], k, guidance=guidance, taste=taste)
     elif results:
-        system, user = build_web_rag_prompt(profile, results[:_WEB_SEARCH_RAG_CAP], k, guidance=guidance)
+        system, user = build_web_rag_prompt(
+            profile, results[:_WEB_SEARCH_RAG_CAP], k, guidance=guidance, taste=taste, because=credit
+        )
+        read_snippets = True
     else:
         return []
+
     # No model to ask: Exa's `outputSchema` already returned clean titles, so hand those straight to
     # the pipeline, which ranks and explains every candidate in code anyway. Before this, the Exa
     # branch of `_web_search_capable` was unreachable — `gather_candidates` refused the whole source
@@ -406,8 +486,15 @@ def _web_via_search(
     # cost $7.94 a night was made and retracted — that figure is run 18's real, productive spend
     # under Claude (see docs/reference/settings.md). Only Exa reaches here with candidates; SearXNG returns
     # snippets something must still read, and native search IS the model.
+    def credited(recs: list[dict]) -> list[dict]:
+        if credit:
+            shown = {id(r) for r in results[:_WEB_SEARCH_RAG_CAP]}
+            read = [[r for r in snippets if id(r) in shown] for snippets in per_seed] if read_snippets else None
+            _credit_proposals(recs, searched, per_seed_titles, read)
+        return recs
+
     if not getattr(curator, "can_complete", True):
-        return _titles_as_proposals(candidates, web_trace, reason="no AI provider configured")
+        return credited(_titles_as_proposals(candidates, web_trace, reason="no AI provider configured"))
     _clear_last_tokens(curator)
     reply = curator.complete(system, user)
     parsed = try_parse_web_titles(reply, k)
@@ -415,17 +502,163 @@ def _web_via_search(
     if parsed is None and web_trace is not None:
         # The parse warning logs only a preview; the full reply is what shows where it went wrong.
         web_trace["unparsed_reply"] = _capped_reply(reply)
+    if parsed is None and getattr(curator, "name", "") == "openai_compatible":
+        hint = _local_model_prose_hint(system, user)
+        logger.warning("llm_web: {}", hint)
+        if web_trace is not None:
+            web_trace["hint"] = hint
     stats.add_tokens("llm_web", getattr(curator, "last_tokens", 0), getattr(curator, "last_output_tokens", 0))
     # Same fallback for a model that answered with nothing usable — rate-limited, timed out, or
     # replying in prose. Degrading to Exa's own extraction beats losing the searches we just paid for.
     if not titles and candidates:
-        return _titles_as_proposals(candidates, web_trace, reason="the model returned no usable titles")
+        return credited(_titles_as_proposals(candidates, web_trace, reason="the model returned no usable titles"))
     if web_trace is not None:
         web_trace["rag_system"] = system
         web_trace["rag_user"] = user
     # `proposed` is recorded by the caller, once, AFTER already-watched titles are dropped — so the
     # trace shows what the run actually used rather than what the model first said.
-    return titles
+    return credited(titles)
+
+
+def _seeds_to_search(
+    seeds: list[Seed],
+    recent_count: int,
+    favourite_seeds: list[Seed] | None,
+    favourite_count: int,
+    older_seeds: list[Seed] | None,
+    older_count: int,
+) -> list[tuple[Seed, str]]:
+    """The watches the web search is about, as ``(seed, kind)``: recent first, then favourites, then older.
+
+    A watch already searched under an earlier kind is not searched again.
+    """
+    searched = [(seed, "recent") for seed in seeds[: max(1, recent_count)]]
+    already = {(seed.tmdb_id, seed.media_type) for seed, _ in searched}
+    for kind, extra_seeds, extra_count in (
+        ("favourite", favourite_seeds, favourite_count),
+        ("older", older_seeds, older_count),
+    ):
+        extra = [f for f in (extra_seeds or []) if (f.tmdb_id, f.media_type) not in already]
+        chosen = extra[: max(0, extra_count)]
+        searched += [(seed, kind) for seed in chosen]
+        already |= {(seed.tmdb_id, seed.media_type) for seed in chosen}
+    return searched
+
+
+_NON_WORD = re.compile(r"[^a-z0-9]+")
+
+
+def _normalised(text: str) -> str:
+    return _NON_WORD.sub(" ", text.lower()).strip()
+
+
+def _named_in(title: str, text: str) -> bool:
+    """Whether ``title`` appears in ``text`` as whole words, ignoring case and punctuation."""
+    needle = _normalised(title)
+    return len(needle) >= _MIN_SNIPPET_TITLE_CHARS and f" {needle} " in f" {_normalised(text)} "
+
+
+def _credit_proposals(
+    recs: list[dict],
+    searched: list[tuple[Seed, str]],
+    per_seed_titles: list[list[TitleCandidate]],
+    per_seed_snippets: list[list[SearchResult]] | None,
+) -> None:
+    """Set ``rec["for"]`` on each proposal to the watches it is credited to (#152), in search order.
+
+    The searches that extracted the title come first; for a proposal none of them held, the searches whose
+    snippets the model read name it (only when it read snippets); for one still without, the model's own
+    ``because``. Snippets are matched on their titles, and only the ones the model was shown. A proposal is
+    credited to at most `_MAX_CREDITED_SEEDS` watches. A proposal nothing credits keeps no ``for`` and ranks
+    as it always did.
+    """
+    found_by: dict[tuple[str, str], list[Seed]] = {}
+    places: dict[tuple[tuple[str, str], int], float] = {}  # (title, id(seed)) -> place in that seed's list
+    for (seed, _), titles in zip(searched, per_seed_titles, strict=True):
+        for index, title in enumerate(titles):
+            credited = found_by.setdefault(_title_key(title), [])
+            if seed not in credited:
+                credited.append(seed)
+                places[(_title_key(title), id(seed))] = index / max(1, len(titles) - 1)
+    for rec in recs:
+        key = (str(rec.get("title", "")).strip().lower(), "show" if rec.get("media") == "show" else "movie")
+        credited = list(found_by.get(key, []))
+        if not credited and per_seed_snippets is not None:
+            for (seed, _), snippets in zip(searched, per_seed_snippets, strict=True):
+                if any(_named_in(rec["title"], r.title) for r in snippets):
+                    credited.append(seed)
+        if credited:
+            rec["for"] = credited[:_MAX_CREDITED_SEEDS]
+            held = [places[(key, id(seed))] for seed in rec["for"] if (key, id(seed)) in places]
+            if held:
+                rec["position"] = min(held)
+    _credit_by_because([r for r in recs if "for" not in r], [seed for seed, _ in searched])
+
+
+def _shortens(a: str, b: str) -> bool:
+    """Whether one normalised title is the other cut short at a word boundary."""
+    return bool(a and b) and (b.startswith(a + " ") or a.startswith(b + " "))
+
+
+def _credit_by_because(recs: list[dict], listed: list[Seed]) -> None:
+    """Credit each uncredited proposal to the one listed watch its ``because`` names (#152).
+
+    Anything else the model wrote there — a title it was not shown, or one two listed watches share — is
+    ignored rather than guessed at.
+    """
+    for rec in recs:
+        named = rec.get("because")
+        if "for" in rec or not isinstance(named, str) or not _normalised(named):
+            continue
+        wanted = _normalised(named)
+        matches = {(s.tmdb_id, s.media_type): s for s in listed if _normalised(s.title) == wanted}
+        if not matches:
+            # A model asked for a because on every title shortens about 1 in 15 of them ("Mission Impossible"
+            # for "Mission: Impossible - Dead Reckoning", measured 2026-10-11). A whole-word prefix names a watch
+            # only when it fits exactly one, so "Alien" credits nothing beside "Alien: Romulus" and "Alien: Earth".
+            matches = {(s.tmdb_id, s.media_type): s for s in listed if _shortens(wanted, _normalised(s.title))}
+        if len(matches) == 1:
+            rec["for"] = list(matches.values())
+
+
+def _title_key(candidate: TitleCandidate) -> tuple[str, str]:
+    return (candidate.title.strip().lower(), candidate.media)
+
+
+def _fair_share(
+    candidates: list[TitleCandidate], per_seed_titles: list[list[TitleCandidate]], kinds: list[str], k: int
+) -> tuple[list[tuple[str, list[TitleCandidate], int]], dict[str, int]]:
+    """Split the extracted titles by the kind of search that found them, with each kind's share of the ``k`` picks.
+
+    A title belongs to the first kind in recent, favourite, older order that any search of it came
+    from, so a title a recent watch found is "recent" however many older searches found it too. Each
+    kind's picks are in proportion to its share of the searches run, and recent takes what the others
+    leave. A kind with no searches or no titles gets no share and no list, and its share goes to recent.
+    The pool the model reads is capped per kind in the same proportion, so a large recent haul cannot
+    push the favourites and older titles out of the prompt.
+
+    Returns:
+        ``(kind, titles, share)`` per kind kept, recent first, and the shares by kind for the trace.
+    """
+    owner: dict[tuple[str, str], str] = {}
+    for kind in _KIND_ORDER:
+        for found, found_kind in zip(per_seed_titles, kinds, strict=True):
+            if found_kind == kind:
+                for title in found:
+                    owner.setdefault(_title_key(title), kind)
+    searches = {kind: kinds.count(kind) for kind in _KIND_ORDER}
+    by_kind = {kind: [c for c in candidates if owner.get(_title_key(c)) == kind] for kind in _KIND_ORDER}
+    shares = {
+        kind: max(1, round(k * searches[kind] / len(kinds))) if searches[kind] and by_kind[kind] else 0
+        for kind in _KIND_ORDER[1:]
+    }
+    shares["recent"] = max(0, k - sum(shares.values()))
+    groups = [
+        (kind, by_kind[kind][: math.ceil(_WEB_PICK_CAP * searches[kind] / len(kinds))], shares[kind])
+        for kind in _KIND_ORDER
+        if by_kind[kind] and (kind == "recent" or shares[kind])
+    ]
+    return groups, {kind: shares[kind] for kind in _KIND_ORDER}
 
 
 def _titles_as_proposals(candidates: list[TitleCandidate], web_trace: dict | None, *, reason: str) -> list[dict]:
@@ -481,6 +714,13 @@ def _search_one_seed(search, query: str, per_query: int, structured: bool) -> di
     """
     if structured:
         hits, found = search.search_detailed(query, num_results=per_query)
+    elif hasattr(search, "search_status"):
+        hits, dead = search.search_status(query, num_results=per_query)
+        found = []
+        if not hits and dead:
+            # Measured on a fresh SearXNG (2026-10-11): rate-limited engines answer an empty page, and
+            # caching it as a thin result hid that title's suggestions into the next night's run.
+            raise SearchUnavailable(f"every search engine failed: {', '.join(dead)}")
     else:
         hits, found = search.search(query, num_results=per_query), []
     return {
@@ -866,6 +1106,13 @@ def gather_candidates(
     season_items: dict[MediaType, list[dict]] | None = None,
     season_source: str = "season",
     web_guidance: Guidance | None = None,
+    taste: TastePrompt | None = None,
+    favourite_seeds: list[Seed] | None = None,
+    favourite_count: int = 0,
+    older_seeds: list[Seed] | None = None,
+    older_count: int = 0,
+    credit_web_titles: bool = False,
+    web_credit_mode: str = "full",
 ) -> list[Candidate]:
     """Pool candidates from every enabled source, deduped by (tmdb_id, media_type).
 
@@ -878,6 +1125,11 @@ def gather_candidates(
     source; the TMDB sources ignore them. ``search``/``web_search_mode`` drive the ``llm_web``
     source's external-search backend (Exa) — ``search`` is None when no key is configured.
     ``web_guidance`` is the row's AI instructions for that source's prompt (#138); None = built-in.
+    ``taste`` and the favourite and older seeds and counts widen what the AI sees of the person's history
+    (#152); see `web_recommendations`. The defaults send exactly what this source has always sent.
+    ``credit_web_titles`` credits each AI-search title to the watches that found it, so it ranks and spreads
+    like a similar title from those watches (#152); ``web_credit_mode`` prices that credit (see
+    `ranking.apply_web_credit_mode`).
 
     Pass a ``stats`` (a :class:`GatherStats`) to have the AI token spend of the ``llm_web`` source
     (and Exa searches) accumulated into it, for per-run AI accounting.
@@ -1073,11 +1325,42 @@ def gather_candidates(
                 cache=web_search_cache,
                 recent_count=recent_count,
                 guidance=web_guidance,
+                taste=taste,
+                favourite_seeds=favourite_seeds,
+                favourite_count=favourite_count,
+                older_seeds=older_seeds,
+                older_count=older_count,
+                credit=credit_web_titles,
             ):
                 media_type = MediaType.SHOW if rec.get("media") == "show" else MediaType.MOVIE
                 found = tmdb.search(rec["title"], media_type, year=rec.get("year"))
                 if found:
-                    add(found, media_type, "llm_web")
+                    credit_seeds = rec.get("for") or []
+                    if credit_seeds:
+                        # The coherence only prices a title no other source scored: one tmdb_similar already
+                        # measured keeps that score, or the same similarity would be counted twice. Discover and
+                        # Trakt claim no affinity, so a title they also found is priced as the web's alone.
+                        key = (found["id"], media_type)
+                        existing = pool.get(key)
+                        coherence = None
+                        if key not in measured:
+                            lead = max(credit_seeds, key=lambda s: s.weight)
+                            coherence = genre_coherence(_seed_genre_ids(tmdb, lead), found.get("genre_ids") or [])
+                        first_web_touch = existing is None or "llm_web" not in existing.sources
+                        before = measured.get(key)
+                        web_title = add(found, media_type, "llm_web", coherence)
+                        if first_web_touch:
+                            web_title.pre_web_affinity = before
+                            web_title.web_coherence = coherence
+                            web_title.web_position = rec.get("position")
+                        known = {(s.tmdb_id, s.media_type) for s in web_title.seeds}
+                        for seed in credit_seeds:
+                            if (seed.tmdb_id, seed.media_type) not in known:
+                                web_title.seeds.append(seed)
+                                web_title.web_seeds.append(seed)
+                                known.add((seed.tmdb_id, seed.media_type))
+                    else:
+                        add(found, media_type, "llm_web")
                     resolved.append(_rec_label(rec))
                     proposals.append({"title": _rec_label(rec), "tmdb_id": int(found["id"]), "media": media_type.value})
                 else:
@@ -1169,7 +1452,7 @@ def gather_candidates(
         }
         for source in sorted(attempted)
     ]
-    return list(pool.values())
+    return apply_web_credit_mode(list(pool.values()), web_credit_mode)
 
 
 def _dominant_genre_ids(tmdb: TmdbClient, seeds: list[Seed], media_type: MediaType) -> list[int]:

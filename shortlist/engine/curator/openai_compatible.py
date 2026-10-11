@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from urllib.parse import urlparse, urlunparse
 
+import httpx
 from loguru import logger
 
 from shortlist.engine.curator.openai import DEFAULT_MODEL, OpenAICurator
@@ -46,6 +47,42 @@ _EMBEDDING_HINTS = ("embed", "bge-", "-minilm", "all-minilm", "nomic-", "e5-", "
 def _is_embedding_model(name: str) -> bool:
     lowered = name.lower()
     return any(hint in lowered for hint in _EMBEDDING_HINTS)
+
+
+#: Shortlist's AI web-search prompts run ~3-5k tokens; below this an Ollama server truncates them.
+_MIN_OLLAMA_CONTEXT = 8192
+OLLAMA_CONTEXT_FIX = "set OLLAMA_CONTEXT_LENGTH=16384 on the Ollama server"
+
+
+def ollama_context_warning(base_url: str, model: str) -> str | None:
+    """A warning when ``base_url`` is an Ollama whose loaded ``model`` has a too-small context window.
+
+    Ollama's default window is 2-4k tokens and its OpenAI-compatible API cannot raise it per request,
+    so an oversized prompt loses its START (the instructions) and the model answers in prose. Shapes
+    recorded from Ollama 0.40.2 (`tests/fixtures/ollama_api_*.json`): `/api/version` answers
+    ``{"version": ...}``; `/api/ps` lists LOADED models with their runtime ``context_length``
+    (`/api/show` only carries the model's architectural maximum, which says nothing about the window).
+
+    Returns None when the server is not Ollama, the model is not loaded, or anything fails: this only
+    ever adds a line to the Test result, never turns a working connection into a failure.
+    """
+    root = base_url.rstrip("/").removesuffix("/v1")
+    try:
+        version = httpx.get(f"{root}/api/version", timeout=3.0)
+        if version.status_code != 200 or "version" not in version.json():
+            return None
+        loaded = httpx.get(f"{root}/api/ps", timeout=3.0).json().get("models") or []
+        for entry in loaded:
+            if model in (entry.get("name"), entry.get("model")):
+                context = entry.get("context_length")
+                if isinstance(context, int) and 0 < context < _MIN_OLLAMA_CONTEXT:
+                    return (
+                        f"Ollama's context window is {context:,} tokens; Shortlist's AI web search needs about "
+                        f"6,000+. {OLLAMA_CONTEXT_FIX[0].upper()}{OLLAMA_CONTEXT_FIX[1:]}."
+                    )
+    except (httpx.HTTPError, ValueError, AttributeError) as e:
+        logger.debug("could not read the Ollama context window ({})", type(e).__name__)
+    return None
 
 
 class OpenAICompatibleCurator(OpenAICurator):
@@ -146,4 +183,6 @@ class OpenAICompatibleCurator(OpenAICurator):
         models = self.list_models()
         if not models:
             return "connected — the server reports no models loaded"
-        return f"connected — {len(models)} model(s) available"
+        result = f"connected — {len(models)} model(s) available"
+        warning = ollama_context_warning(str(self._client.base_url), self._model)
+        return f"{result}. {warning}" if warning else result
