@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { MAX_REFRESH_DAYS, clampRefreshDays } from "@/lib/constants";
+import { changedWithoutFocus } from "@/lib/unfocused-change";
 import { cn } from "@/lib/utils";
 import { selectedClass, unselectedClass } from "@/lib/selected";
 
@@ -111,7 +112,10 @@ export function IdleHoldField({
           min={0}
           max={MAX_REFRESH_DAYS}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            if (changedWithoutFocus(e.currentTarget)) commit(e.target.value);
+          }}
           onBlur={(e) => commit(e.target.value)}
           aria-label="How long to hold a row for an inactive viewer, in days"
           className="h-9 w-24 rounded-md border border-input bg-background px-3 text-sm tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

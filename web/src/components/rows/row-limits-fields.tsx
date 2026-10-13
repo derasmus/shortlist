@@ -3,6 +3,7 @@ import { useId, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { CollectionInput } from "@/lib/types";
+import { changedWithoutFocus } from "@/lib/unfocused-change";
 
 /** Round (to a whole number, or one decimal) and clamp into the API's range. */
 function clamp(n: number, min: number, max: number, whole: boolean): number {
@@ -43,8 +44,8 @@ function LimitInput({
     setText(value === null ? "" : String(value));
   }
 
-  const commit = () => {
-    const parsed = text.trim() === "" ? null : Number(text);
+  const commit = (raw: string) => {
+    const parsed = raw.trim() === "" ? null : Number(raw);
     const next =
       parsed === null || Number.isNaN(parsed) ? null : clamp(parsed, min, max, whole);
     setText(next === null ? "" : String(next));
@@ -62,12 +63,15 @@ function LimitInput({
       step={step}
       value={text}
       placeholder="No limit"
-      onChange={(event) => setText(event.target.value)}
-      onBlur={commit}
+      onChange={(event) => {
+        setText(event.target.value);
+        if (changedWithoutFocus(event.currentTarget)) commit(event.target.value);
+      }}
+      onBlur={() => commit(text)}
       onKeyDown={(event) => {
         if (event.key === "Enter") {
           event.preventDefault();
-          commit();
+          commit(text);
         }
       }}
       className={className}
