@@ -6,6 +6,7 @@ import {
   refreshDaysDescription,
 } from "@/lib/constants";
 import { selectedClass } from "@/lib/selected";
+import { changedWithoutFocus } from "@/lib/unfocused-change";
 import { cn } from "@/lib/utils";
 
 interface RefreshDaysFieldProps {
@@ -100,7 +101,10 @@ export function RefreshDaysField({
             min={0}
             max={MAX_REFRESH_DAYS}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              if (changedWithoutFocus(e.currentTarget)) commit(e.target.value);
+            }}
             onBlur={(e) => commit(e.target.value)}
             aria-label="Titles refresh every, in days"
             className="h-7 w-14 rounded border border-input bg-background px-2 text-xs tabular-nums text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

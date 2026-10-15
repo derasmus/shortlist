@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { changedWithoutFocus } from "@/lib/unfocused-change";
 
 const SEED_WINDOW_MIN = 1;
 const SEED_WINDOW_MAX = 20;
@@ -29,7 +30,8 @@ function seedWindowHint(value: number): string {
  * ({@link SEED_WINDOW_MIN}..{@link SEED_WINDOW_MAX}), written as one sentence with the number inline.
  *
  * Self-buffering like {@link MaxSeedsField}: the field can be cleared and retyped, and the clamped
- * value is pushed up only on blur/Enter so a half-typed number never reaches the row.
+ * value is pushed up on blur/Enter so a half-typed number never reaches the row, or at once for a
+ * change made without focus (`changedWithoutFocus`).
  */
 export function SeedWindowField({
   value,
@@ -52,8 +54,8 @@ export function SeedWindowField({
     setText(String(value));
   }
 
-  const commit = () => {
-    const next = text.trim() === "" ? value : clampSeedWindow(Number(text));
+  const commit = (raw: string) => {
+    const next = raw.trim() === "" ? value : clampSeedWindow(Number(raw));
     setText(String(next));
     if (next !== value) onChange(next);
   };
@@ -73,12 +75,15 @@ export function SeedWindowField({
           max={SEED_WINDOW_MAX}
           value={text}
           disabled={disabled}
-          onChange={(event) => setText(event.target.value)}
-          onBlur={commit}
+          onChange={(event) => {
+            setText(event.target.value);
+            if (changedWithoutFocus(event.currentTarget)) commit(event.target.value);
+          }}
+          onBlur={() => commit(text)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              commit();
+              commit(text);
             }
           }}
           className="w-20"

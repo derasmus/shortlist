@@ -4,13 +4,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { selectedClass } from "@/lib/selected";
+import { changedWithoutFocus } from "@/lib/unfocused-change";
 import { cn } from "@/lib/utils";
 
 /**
  * A whole-number field with its own text buffer, shared by the row-size, seed-budget and
  * recent-count pickers. The buffer lets a value be cleared and retyped without the field fighting
- * the user; the clamped whole number is pushed up only on blur/Enter (and on the browser spinner),
- * so autosave never fires mid-type with an out-of-range value.
+ * the user; the clamped whole number is pushed up on blur/Enter, or at once for a change made without
+ * focus (`changedWithoutFocus`), so autosave never fires mid-type with an out-of-range value.
  */
 export function NumberField({
   value,
@@ -58,8 +59,8 @@ export function NumberField({
 
   const clamp = (n: number) => (Number.isFinite(n) ? Math.max(min, Math.min(max, Math.round(n))) : fallback);
 
-  const commit = () => {
-    const next = text.trim() === "" ? value : clamp(Number(text));
+  const commit = (raw: string) => {
+    const next = raw.trim() === "" ? value : clamp(Number(raw));
     setText(String(next));
     if (next !== value) onChange(next);
   };
@@ -89,12 +90,15 @@ export function NumberField({
           min={min}
           max={max}
           value={text}
-          onChange={(event) => setText(event.target.value)}
-          onBlur={commit}
+          onChange={(event) => {
+            setText(event.target.value);
+            if (changedWithoutFocus(event.currentTarget)) commit(event.target.value);
+          }}
+          onBlur={() => commit(text)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              commit();
+              commit(text);
             }
           }}
           className="w-24"

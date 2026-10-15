@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -638,6 +638,22 @@ describe("a setting the kind hides but the engine still reads", () => {
     expect(screen.getByLabelText(/Take turns between their last/i)).toBeDisabled();
     expect(screen.getByText(/Doesn't work with a blend of 3 or more/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reset" })).toBeInTheDocument();
+  });
+});
+
+describe("a spin button that changes a number without focusing it (#160)", () => {
+  // Firefox does this: the box shows the new number, and no blur ever follows to commit it.
+  it("saves the Take turns number it shows", async () => {
+    renderEditor(row({ ...named(BYW_NAME), max_seeds: 2, seed_window: 1 }));
+    fireEvent.change(screen.getByLabelText(/Take turns between their last/i), { target: { value: "3" } });
+    expect((await savedBody()).seed_window).toBe(3);
+  });
+
+  it("saves the blend it shows, and chooses the blend", async () => {
+    renderEditor(row({ ...named(BYW_NAME), max_seeds: 2 }));
+    fireEvent.change(screen.getByLabelText("How many watches to blend"), { target: { value: "4" } });
+    expect(screen.getByRole("radio", { name: /A blend of their last/ })).toBeChecked();
+    expect((await savedBody()).max_seeds).toBe(4);
   });
 });
 

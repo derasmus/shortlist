@@ -12,6 +12,7 @@ import {
   type RowKindContext,
 } from "@/lib/row-kinds";
 import type { CollectionInput, Settings } from "@/lib/types";
+import { changedWithoutFocus } from "@/lib/unfocused-change";
 import { cn } from "@/lib/utils";
 import { selectedVerticalClass } from "@/lib/selected";
 
@@ -112,10 +113,10 @@ export function BasedOnField({
   // past must not quietly change what the row is based on.
   const [typing, setTyping] = useState(false);
 
-  const chooseBlend = () => {
-    const typed = Math.round(Number(text));
+  const chooseBlend = (raw: string) => {
+    const typed = Math.round(Number(raw));
     const count =
-      text.trim() !== "" && Number.isFinite(typed)
+      raw.trim() !== "" && Number.isFinite(typed)
         ? Math.min(blendMax, Math.max(blendMin, typed))
         : Math.max(blendMin, effective);
     setText(String(count));
@@ -126,7 +127,7 @@ export function BasedOnField({
   const commitTyped = () => {
     if (!typing) return;
     setTyping(false);
-    chooseBlend();
+    chooseBlend(text);
   };
 
   const inherit = (on: boolean) =>
@@ -172,7 +173,7 @@ export function BasedOnField({
           id={`${group}-blend`}
           name={group}
           checked={blendSelected}
-          onSelect={chooseBlend}
+          onSelect={() => chooseBlend(text)}
           labelledBy={`${group}-blend-before ${group}-blend-after`}
           describedBy={blendAvailable ? undefined : `${group}-blend-reason`}
           disabled={!blendAvailable}
@@ -194,7 +195,10 @@ export function BasedOnField({
             value={text}
             onChange={(event) => {
               setText(event.target.value);
-              setTyping(true);
+              // A spin button that never focused the box is a deliberate choice with no blur to
+              // follow it (#160), so it chooses the blend now, as a typed number does on blur.
+              if (changedWithoutFocus(event.currentTarget)) chooseBlend(event.target.value);
+              else setTyping(true);
             }}
             onBlur={commitTyped}
             onKeyDown={(event) => {

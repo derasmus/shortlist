@@ -462,3 +462,52 @@ class TestBackupNames:
 
     def test_a_real_backup_name_passes(self):
         assert backup_mod.safe_backup_name("shortlist_20260729_002652_pre-migration.db").endswith(".db")
+
+
+class TestABackupCarriesNoFreeSpace:
+    """The live database keeps the pages its prunes free, and on a busy server that is a large share of
+    the file (~40%, measured 2026-10-16). The online backup API copies page for page, so every nightly
+    backup carried that free space too. A backup is never written to again, so it is compacted."""
+
+    def test_a_backup_of_a_database_with_freed_pages_has_none(self, tmp_path: Path):
+        _live_db(tmp_path)
+        with closing(sqlite3.connect(tmp_path / "shortlist.db")) as con:
+            con.execute("DELETE FROM probe WHERE id > 20")
+            con.commit()
+            assert con.execute("PRAGMA freelist_count").fetchone()[0] > 0, "the setup freed no pages"
+
+        made = backup_mod.take_backup(tmp_path, label="manual")
+
+        assert made is not None
+        with closing(sqlite3.connect(made)) as con:
+            assert con.execute("PRAGMA freelist_count").fetchone() == (0,)
+            assert con.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+            assert con.execute("SELECT count(*) FROM probe").fetchone() == (20,)
+        assert made.stat().st_size < (tmp_path / "shortlist.db").stat().st_size
+
+    def test_a_compaction_that_fails_keeps_the_full_size_backup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Compacting needs more free disk than the copy did. A pre-migration backup that failed for want of
+        it would refuse the upgrade's boot, so a failed compaction keeps the uncompacted copy instead."""
+        _live_db(tmp_path)
+        real_connect = sqlite3.connect
+
+        class _DiskFullOnVacuum(sqlite3.Connection):
+            def execute(self, sql: str, *args):
+                if sql.strip().upper().startswith("VACUUM"):
+                    raise sqlite3.OperationalError("database or disk is full")
+                return super().execute(sql, *args)
+
+        def connect(database, *args, **kwargs):
+            if str(database).endswith(backup_mod.PARTIAL_SUFFIX):
+                kwargs["factory"] = _DiskFullOnVacuum
+            return real_connect(database, *args, **kwargs)
+
+        monkeypatch.setattr(sqlite3, "connect", connect)
+
+        made = backup_mod.take_backup(tmp_path, label="pre-migration")
+
+        assert made is not None, "a failed compaction lost the backup"
+        monkeypatch.setattr(sqlite3, "connect", real_connect)
+        with closing(sqlite3.connect(made)) as con:
+            assert con.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+            assert con.execute("SELECT count(*) FROM probe").fetchone() == (200,)
