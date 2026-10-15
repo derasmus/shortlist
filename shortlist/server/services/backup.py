@@ -92,7 +92,13 @@ def take_backup(config_dir: Path, *, label: str = "scheduled", max_keep: int = D
                 src.backup(dst)
                 # The backup API copies page for page, free pages included — ~40% of a busy server's
                 # file (measured 2026-10-16). The copy is private and never written again, so compact it.
-                dst.execute("VACUUM")
+                # Compacting needs ~1.6x the copy's size free, and a pre-migration backup that failed for
+                # want of it would refuse the upgrade's boot. VACUUM is transactional, so a failed one
+                # leaves the full-size copy intact, and that is still a good backup.
+                try:
+                    dst.execute("VACUUM")
+                except sqlite3.Error as e:
+                    logger.warning("could not compact the backup ({}); keeping it at full size", e)
             finally:
                 # Both handles, always, and before the rename or the unlink below. Closing only on the
                 # success path would leak two SQLite connections on a failure mid-`backup()` and then
