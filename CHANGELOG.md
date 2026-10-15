@@ -14,6 +14,10 @@ All notable changes to this project are documented here. This project follows
   the same happened to the blend count, row size, limits and the refresh and hold days. Typing a number
   still waits until you leave the box or press Enter.
 
+- **Backups are smaller.** A backup used to copy the database's empty space too, which on a busy server
+  can be a large part of the file. Each backup is now compacted once it is written, so the 10 backups Shortlist
+  keeps take less disk. Nothing in a backup changes, and restoring works as before.
+
 ## [1.12.0] - 2026-10-12
 
 ### Added

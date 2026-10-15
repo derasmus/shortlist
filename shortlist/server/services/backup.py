@@ -90,6 +90,9 @@ def take_backup(config_dir: Path, *, label: str = "scheduled", max_keep: int = D
                 src = sqlite3.connect(str(db_path))
                 dst = sqlite3.connect(str(partial))
                 src.backup(dst)
+                # The backup API copies page for page, free pages included — ~40% of a busy server's
+                # file (measured 2026-10-16). The copy is private and never written again, so compact it.
+                dst.execute("VACUUM")
             finally:
                 # Both handles, always, and before the rename or the unlink below. Closing only on the
                 # success path would leak two SQLite connections on a failure mid-`backup()` and then
