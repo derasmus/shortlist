@@ -6,6 +6,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-10-16
+
 ### Fixed
 
 - **In Firefox, a number changed with the box's up/down arrows is saved again** ([#160](https://github.com/stevezau/shortlist/issues/160)).
