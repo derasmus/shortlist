@@ -1,0 +1,17 @@
+services:
+  shortlist:
+    build: .
+    container_name: shortlist
+    ports:
+      - "5959:5959"
+    volumes:
+      - shortlist-config:/config
+    environment:
+      - TZ=Africa/Johannesburg
+      - PUID=1000
+      - PGID=1000
+      - SHORTLIST_DRY_RUN=1
+    restart: unless-stopped
+
+volumes:
+  shortlist-config:
