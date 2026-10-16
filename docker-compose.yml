@@ -10,7 +10,6 @@ services:
       - TZ=Africa/Johannesburg
       - PUID=1000
       - PGID=1000
-      - SHORTLIST_DRY_RUN=1
     restart: unless-stopped
 
 volumes:
