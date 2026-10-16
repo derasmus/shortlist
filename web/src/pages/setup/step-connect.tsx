@@ -147,7 +147,6 @@ export function StepConnect({ data, update }: StepProps) {
   const requiredChecksPass =
     probe.data !== undefined &&
     probe.data.checks.pms_version.ok &&
-    probe.data.checks.plex_pass.ok &&
     probe.data.checks.libraries.ok;
 
   // Nothing here is possible until Shortlist can ask Plex what servers you have — so connecting the
